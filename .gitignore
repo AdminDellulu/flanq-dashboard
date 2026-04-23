@@ -1,0 +1,16 @@
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+scripts/.env
+scripts/.env.*
+!scripts/.env.example
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
