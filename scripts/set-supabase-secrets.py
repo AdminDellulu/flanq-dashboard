@@ -79,6 +79,8 @@ def api(method: str, path: str, token: str, body=None) -> tuple[int, str]:
     req = urllib.request.Request(url, method=method, data=data)
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Content-Type", "application/json")
+    req.add_header("User-Agent", "supabase-cli/2.90.0 (flanq-setter)")
+    req.add_header("Accept", "application/json")
     try:
         with urllib.request.urlopen(req) as resp:
             return resp.status, resp.read().decode()
