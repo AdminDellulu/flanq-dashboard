@@ -3834,12 +3834,34 @@
                 const pColors = pRoas.map(r => r >= 4 ? 'rgba(6,214,160,0.75)' : r >= 3 ? 'rgba(34,211,238,0.7)' : r >= 2 ? 'rgba(245,158,11,0.7)' : 'rgba(248,113,113,0.7)');
                 const pBorders = pRoas.map(r => r >= 4 ? 'rgb(6,214,160)' : r >= 3 ? 'rgb(34,211,238)' : r >= 2 ? 'rgb(245,158,11)' : 'rgb(248,113,113)');
 
-                // Cap bar height on mobile + wrap in scroll container so the chart doesn't run for screens
+                // Cap viewport so this chart never stretches its grid peer; user can scroll OR click "Show all".
                 const _isPhone = window.matchMedia && window.matchMedia('(max-width: 640px)').matches;
-                const _barH = _isPhone ? 22 : 36;
-                const _maxH = _isPhone ? 480 : 1200;
-                const _calcH = Math.max(200, Math.min(_maxH, prodArr.length * _barH + 40));
-                am2El.innerHTML = `<div class="chart-title">ROAS by Product</div><div class="chart-scroll-y" style="max-height:${_isPhone ? 420 : 1100}px;overflow-y:auto;-webkit-overflow-scrolling:touch;"><div class="chart-inner" style="min-height:${_calcH}px;"><canvas id="productRoasBar"></canvas></div></div>`;
+                const _barH = _isPhone ? 22 : 28;
+                const _capCollapsed = _isPhone ? 360 : 440;
+                const _fullH = Math.max(200, prodArr.length * _barH + 40);
+                const _overflow = _fullH > _capCollapsed;
+                am2El.innerHTML = `
+                  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                    <div class="chart-title" style="margin:0;">ROAS by Product <span style="font-size:11px;color:var(--text-sec);font-weight:500;">(${prodArr.length})</span></div>
+                    ${_overflow ? `<button id="roasByProductToggle" data-expanded="0" style="background:transparent;border:1px solid var(--border);color:var(--text-sec);font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer;font-weight:600;">Show all</button>` : ''}
+                  </div>
+                  <div id="roasByProductScroll" class="chart-scroll-y" style="max-height:${_capCollapsed}px;overflow-y:auto;-webkit-overflow-scrolling:touch;margin-top:8px;">
+                    <div class="chart-inner" style="min-height:${_fullH}px;height:${_fullH}px;"><canvas id="productRoasBar"></canvas></div>
+                  </div>`;
+                const _tgl = document.getElementById('roasByProductToggle');
+                const _scroll = document.getElementById('roasByProductScroll');
+                if (_tgl && _scroll) _tgl.onclick = () => {
+                    const expanded = _tgl.dataset.expanded === '1';
+                    if (expanded) {
+                        _scroll.style.maxHeight = _capCollapsed + 'px';
+                        _tgl.textContent = 'Show all';
+                        _tgl.dataset.expanded = '0';
+                    } else {
+                        _scroll.style.maxHeight = _fullH + 'px';
+                        _tgl.textContent = 'Collapse';
+                        _tgl.dataset.expanded = '1';
+                    }
+                };
 
                 dc('productRoasBar');
                 const pCtx = document.getElementById('productRoasBar');
