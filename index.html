@@ -2900,15 +2900,33 @@
         dc('revenueOrders'); const cd = chartDefaults();
         const ctx = document.getElementById('revenueOrdersChart'); if (!ctx) return;
         const hourly = isHourlyMode(dur);
+
+        // For hourly mode (today/yesterday), overlay the OTHER day's curve as a dashed reference line
+        // so the user always has context — even when today's traffic is sparse, they can see where it
+        // sits versus yesterday's pattern at the same hour.
+        const datasets = [
+            { label: 'Revenue (₹)', data: data.map(d => d.rev), backgroundColor: function(context) { const chart = context.chart; const {ctx: c, chartArea} = chart; return purpleGrad(c, chartArea, 0.7); }, borderRadius: 6, yAxisID: 'y' },
+            { label: 'Orders', data: data.map(d => d.orders), type: 'line', borderColor: B.teal, borderWidth: 2, tension: 0.4, yAxisID: 'y1', pointRadius: 2, pointBackgroundColor: B.teal }
+        ];
+        if (hourly) {
+            const refSeries = (dur === 'today' ? DATA.hourlyYesterday : DATA.hourlyToday) || [];
+            const refLabel  = dur === 'today' ? 'Revenue (yesterday)' : 'Revenue (today)';
+            const refOrders = dur === 'today' ? 'Orders (yesterday)'  : 'Orders (today)';
+            // Map by hour so reference aligns with whatever subset of `data` we received (today is trimmed
+            // to the current IST hour, so we slice the reference series to the same hour range).
+            const byHour = new Map((refSeries || []).map(r => [r.hour, r]));
+            const refRev    = data.map(d => { const r = byHour.get(d.hour); return r ? r.rev : null; });
+            const refOrdArr = data.map(d => { const r = byHour.get(d.hour); return r ? r.orders : null; });
+            const hasRef = refRev.some(v => v != null && v > 0);
+            if (hasRef) {
+                datasets.push({ label: refLabel,  data: refRev,    type: 'line', borderColor: 'rgba(124,58,237,0.55)', borderWidth: 1.5, borderDash: [5,4], tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y',  spanGaps: true });
+                datasets.push({ label: refOrders, data: refOrdArr, type: 'line', borderColor: 'rgba(20,184,166,0.45)', borderWidth: 1.5, borderDash: [5,4], tension: 0.4, pointRadius: 0, fill: false, yAxisID: 'y1', spanGaps: true });
+            }
+        }
+
         charts['revenueOrders'] = new Chart(ctx, {
             type: 'bar',
-            data: {
-                labels: data.map(d => getChartLabel(d, dur)),
-                datasets: [
-                    { label: 'Revenue (₹)', data: data.map(d => d.rev), backgroundColor: function(context) { const chart = context.chart; const {ctx: c, chartArea} = chart; return purpleGrad(c, chartArea, 0.7); }, borderRadius: 6, yAxisID: 'y' },
-                    { label: 'Orders', data: data.map(d => d.orders), type: 'line', borderColor: B.teal, borderWidth: 2, tension: 0.4, yAxisID: 'y1', pointRadius: 2, pointBackgroundColor: B.teal }
-                ]
-            },
+            data: { labels: data.map(d => getChartLabel(d, dur)), datasets: datasets },
             options: {
                 responsive: true, maintainAspectRatio: false,
                 interaction: { mode: 'index', intersect: false },
