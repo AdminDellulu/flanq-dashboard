@@ -964,6 +964,34 @@
             .funnel-tier-val { font-size: clamp(11px, 3vw, 14px); }
         }
 
+        /* ===== MOBILE: AdPulse campaign cards (compress so ROAS doesn't dominate the screen) ===== */
+        @media (max-width: 768px) {
+            .campaign-card { padding: 12px 14px; border-radius: 10px; border-left-width: 3px; }
+            .campaign-name { font-size: 11px; margin-bottom: 4px; line-height: 1.25; }
+            .campaign-roas { font-size: 16px; margin-bottom: 8px; }
+            .roas-tag { font-size: 8px; }
+            .campaign-metrics-grid { gap: 4px 12px; margin-bottom: 8px; }
+            .campaign-metric { font-size: 10.5px; }
+            .campaign-footer { padding-top: 6px; }
+            .campaign-purchases { font-size: 10px; }
+            .action-badge { font-size: 9px; padding: 3px 9px; }
+            #campaignsGrid { gap: 8px !important; }
+        }
+        @media (max-width: 480px) {
+            .campaign-card { padding: 10px 12px; }
+            .campaign-roas { font-size: 14px; margin-bottom: 6px; }
+            .campaign-metric { font-size: 10px; }
+            .campaign-name { font-size: 10.5px; }
+            .campaign-purchases { font-size: 9.5px; }
+            .action-badge { font-size: 8.5px; padding: 3px 8px; }
+        }
+
+        /* ===== MOBILE: long horizontal-bar charts (e.g. ROAS by Product) get scrollable ===== */
+        .chart-scroll-y { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        @media (max-width: 768px) {
+            .chart-scroll-y { max-height: 420px; }
+        }
+
         @media print {
             .sidebar, .header, .mobile-nav, .tabs { display: none; }
             .main { width: 100%; }
@@ -3806,7 +3834,12 @@
                 const pColors = pRoas.map(r => r >= 4 ? 'rgba(6,214,160,0.75)' : r >= 3 ? 'rgba(34,211,238,0.7)' : r >= 2 ? 'rgba(245,158,11,0.7)' : 'rgba(248,113,113,0.7)');
                 const pBorders = pRoas.map(r => r >= 4 ? 'rgb(6,214,160)' : r >= 3 ? 'rgb(34,211,238)' : r >= 2 ? 'rgb(245,158,11)' : 'rgb(248,113,113)');
 
-                am2El.innerHTML = `<div class="chart-title">ROAS by Product</div><div class="chart-inner" style="min-height:${Math.max(200, prodArr.length * 36 + 40)}px;"><canvas id="productRoasBar"></canvas></div>`;
+                // Cap bar height on mobile + wrap in scroll container so the chart doesn't run for screens
+                const _isPhone = window.matchMedia && window.matchMedia('(max-width: 640px)').matches;
+                const _barH = _isPhone ? 22 : 36;
+                const _maxH = _isPhone ? 480 : 1200;
+                const _calcH = Math.max(200, Math.min(_maxH, prodArr.length * _barH + 40));
+                am2El.innerHTML = `<div class="chart-title">ROAS by Product</div><div class="chart-scroll-y" style="max-height:${_isPhone ? 420 : 1100}px;overflow-y:auto;-webkit-overflow-scrolling:touch;"><div class="chart-inner" style="min-height:${_calcH}px;"><canvas id="productRoasBar"></canvas></div></div>`;
 
                 dc('productRoasBar');
                 const pCtx = document.getElementById('productRoasBar');
