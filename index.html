@@ -2136,33 +2136,46 @@
                 if (goFetchRes.ok) {
                     const gf = await goFetchRes.json();
                     const t = gf?.today || (Array.isArray(gf) && gf[0]?.today) || null;
-                    // Inject if ANY money/activity has happened today — gating purely on order count silently dropped
-                    // live ad spend on slow-order days. Today's adSpend matters even when orders=0.
-                    const _hasToday = t && (
-                        (t.total_orders||0) > 0 ||
-                        parseFloat(t.total_ad_spend||0) > 0 ||
-                        parseFloat(t.gross_revenue||0) > 0 ||
-                        parseFloat(t.total_shipping||0) > 0
-                    );
-                    if (_hasToday) {
-                        const liveToday = {
-                            d: t.date, orders: t.total_orders||0, cod: t.cod_orders||0, prepaid: t.prepaid_orders||0,
-                            rev: parseFloat(t.gross_revenue)||0, net: parseFloat(t.net_revenue)||0,
-                            cogs: parseFloat(t.total_cogs)||0, gst: 0, pkg: 0,
-                            ship: parseFloat(t.total_shipping)||0, gw: parseFloat(t.total_gateway_fees)||0,
-                            adSpend: parseFloat(t.total_ad_spend)||0, rtoCost: 0,
-                            margin: parseFloat(t.margin_pct)||0, aov: parseFloat(t.aov)||0,
-                            profit: parseFloat(t.contribution_margin)||0, cac: parseFloat(t.cac)||0,
-                            delivered: t.delivered_count||0, rto: t.rto_count||0, rtoRate: parseFloat(t.rto_rate)||0,
-                            cashPrepaid: 0, cashCOD: 0,
-                        };
-                        // Replace or append today's row
+                    // SMART MERGE — get_go_fetch_report has a known IST timezone bug that returns
+                    // total_orders=0 / gross_revenue=0 even when daily_metrics already has the day's
+                    // real numbers. Previous logic either skipped on (orders==0) [dropped fresh ad
+                    // spend] or replaced wholesale [overwrote correct daily_metrics with zeros, which
+                    // is why the user saw NET PROFIT=₹0 / MARGIN=0% on Today].
+                    // New behaviour: keep daily_metrics as the source of truth; only overlay scalar
+                    // fields where the RPC reports MORE than the cron'd row (= the RPC has fresher
+                    // data). Recompute derived metrics (profit/margin/aov/cac/rtoRate) from the merged
+                    // scalars rather than trusting the RPC's stale derived fields.
+                    if (t && t.date) {
                         const todayIdx = DATA.dailyMetrics.findIndex(r => r.d === t.date);
-                        if (todayIdx >= 0) DATA.dailyMetrics[todayIdx] = liveToday;
-                        else DATA.dailyMetrics.push(liveToday);
-                        // Re-sort by date
-                        DATA.dailyMetrics.sort((a, b) => a.d.localeCompare(b.d));
-                        console.log('[LIVE] Today injected:', t.total_orders, 'orders,', t.gross_revenue, 'revenue');
+                        const base = todayIdx >= 0 ? { ...DATA.dailyMetrics[todayIdx] } : {
+                            d: t.date, orders: 0, cod: 0, prepaid: 0, rev: 0, net: 0, cogs: 0,
+                            gst: 0, pkg: 0, ship: 0, gw: 0, adSpend: 0, rtoCost: 0,
+                            margin: 0, aov: 0, profit: 0, cac: 0,
+                            delivered: 0, rto: 0, rtoRate: 0, cashPrepaid: 0, cashCOD: 0,
+                        };
+                        const _max = (a, b) => Math.max(a||0, b||0);
+                        const merged = { ...base,
+                            orders:    _max(base.orders,    t.total_orders),
+                            cod:       _max(base.cod,       t.cod_orders),
+                            prepaid:   _max(base.prepaid,   t.prepaid_orders),
+                            rev:       _max(base.rev,       parseFloat(t.gross_revenue)||0),
+                            net:       _max(base.net,       parseFloat(t.net_revenue)||0),
+                            cogs:      _max(base.cogs,      parseFloat(t.total_cogs)||0),
+                            ship:      _max(base.ship,      parseFloat(t.total_shipping)||0),
+                            gw:        _max(base.gw,        parseFloat(t.total_gateway_fees)||0),
+                            adSpend:   _max(base.adSpend,   parseFloat(t.total_ad_spend)||0),
+                            delivered: _max(base.delivered, t.delivered_count),
+                            rto:       _max(base.rto,       t.rto_count),
+                        };
+                        // Recompute derived fields from the merged scalars (don't trust RPC's stale derived).
+                        merged.profit  = merged.rev - merged.cogs - merged.adSpend - merged.ship - merged.gw - (merged.gst||0) - (merged.pkg||0) - (merged.rtoCost||0);
+                        merged.margin  = merged.rev > 0 ? (merged.profit / merged.rev * 100) : 0;
+                        merged.aov     = merged.orders > 0 ? (merged.rev / merged.orders) : 0;
+                        merged.cac     = merged.orders > 0 ? (merged.adSpend / merged.orders) : 0;
+                        merged.rtoRate = merged.orders > 0 ? (merged.rto / merged.orders * 100) : 0;
+                        if (todayIdx >= 0) DATA.dailyMetrics[todayIdx] = merged;
+                        else { DATA.dailyMetrics.push(merged); DATA.dailyMetrics.sort((a, b) => a.d.localeCompare(b.d)); }
+                        console.log('[LIVE] Today merged:', merged.orders, 'orders,', merged.rev, 'rev,', merged.adSpend, 'adSpend,', merged.profit, 'profit');
                     }
                 }
             } catch(e) { console.warn('[LIVE] go_fetch failed:', e); }
@@ -2178,14 +2191,30 @@
                     fetch(`${SUPABASE_URL}/rest/v1/rpc/get_hourly_metrics`, { method:'POST', headers:{'apikey':SUPABASE_KEY,'Authorization':'Bearer '+SUPABASE_KEY,'Content-Type':'application/json','Accept':'application/json'}, body: JSON.stringify({target_date: todayStr}) }).then(r=>r.ok?r.json():[]),
                     fetch(`${SUPABASE_URL}/rest/v1/rpc/get_hourly_metrics`, { method:'POST', headers:{'apikey':SUPABASE_KEY,'Authorization':'Bearer '+SUPABASE_KEY,'Content-Type':'application/json','Accept':'application/json'}, body: JSON.stringify({target_date: yestStr}) }).then(r=>r.ok?r.json():[])
                 ]);
-                const mapHourly = (arr) => (Array.isArray(arr) ? arr : []).map(h => ({
-                    d: h.label, hour: h.hour, orders: h.orders||0, cod: h.cod_orders||0, prepaid: h.prepaid_orders||0,
-                    rev: parseFloat(h.revenue)||0, net: parseFloat(h.net_revenue)||0,
-                    cogs: parseFloat(h.cogs)||0, gst: 0, pkg: 0, ship: parseFloat(h.shipping)||0,
-                    gw: parseFloat(h.gateway_fees)||0, adSpend: parseFloat(h.ad_spend)||0, rtoCost: 0,
-                    margin: 0, aov: parseFloat(h.aov)||0, profit: 0, cac: 0,
-                    delivered: 0, rto: 0, rtoRate: 0, cashPrepaid: 0, cashCOD: 0, discount: parseFloat(h.discount)||0
-                }));
+                // Recompute derived metrics from the hourly scalar fields. The RPC's previous
+                // hardcoded zeros for margin/profit/cac were why "Today" KPIs showed Net Profit ₹0
+                // and Margin 0% even when ad spend exceeded revenue.
+                const mapHourly = (arr) => (Array.isArray(arr) ? arr : []).map(h => {
+                    const _rev   = parseFloat(h.revenue)||0;
+                    const _cogs  = parseFloat(h.cogs)||0;
+                    const _ad    = parseFloat(h.ad_spend)||0;
+                    const _ship  = parseFloat(h.shipping)||0;
+                    const _gw    = parseFloat(h.gateway_fees)||0;
+                    const _orders = h.orders||0;
+                    const _profit = _rev - _cogs - _ad - _ship - _gw;
+                    return {
+                        d: h.label, hour: h.hour, orders: _orders, cod: h.cod_orders||0, prepaid: h.prepaid_orders||0,
+                        rev: _rev, net: parseFloat(h.net_revenue)||0,
+                        cogs: _cogs, gst: 0, pkg: 0, ship: _ship,
+                        gw: _gw, adSpend: _ad, rtoCost: 0,
+                        margin: _rev > 0 ? (_profit / _rev * 100) : 0,
+                        aov: _orders > 0 ? (_rev / _orders) : (parseFloat(h.aov)||0),
+                        profit: _profit,
+                        cac: _orders > 0 ? (_ad / _orders) : 0,
+                        delivered: 0, rto: 0, rtoRate: 0, cashPrepaid: 0, cashCOD: 0,
+                        discount: parseFloat(h.discount)||0,
+                    };
+                });
                 DATA.hourlyToday = mapHourly(hToday);
                 DATA.hourlyYesterday = mapHourly(hYest);
                 console.log('[HOURLY] Today hours with orders:', DATA.hourlyToday.filter(h=>h.orders>0).length, ', Yesterday:', DATA.hourlyYesterday.filter(h=>h.orders>0).length);
@@ -2412,7 +2441,7 @@
     }
 
     // ==================== HELPERS ====================
-    function fmt(n) { if(n>=1e7)return(n/1e7).toFixed(1)+'Cr'; if(n>=1e5)return(n/1e5).toFixed(1)+'L'; if(n>=1e3)return(n/1e3).toFixed(1)+'K'; return Math.round(n).toLocaleString('en-IN'); }
+    function fmt(n) { if (n == null || isNaN(n)) return '0'; const s = n<0?'-':''; const a = Math.abs(n); if(a>=1e7)return s+(a/1e7).toFixed(1)+'Cr'; if(a>=1e5)return s+(a/1e5).toFixed(1)+'L'; if(a>=1e3)return s+(a/1e3).toFixed(1)+'K'; return Math.round(n).toLocaleString('en-IN'); }
     // Collapsible panel toggle
     function togglePanel(bodyId, chevId) {
         const body = document.getElementById(bodyId);
@@ -2423,7 +2452,7 @@
         if (chev) chev.textContent = isOpen ? '▶' : '▼';
     }
 
-    function fmtR(n) { return '₹' + fmt(n); }
+    function fmtR(n) { if (n == null || isNaN(n)) return '₹0'; if (n < 0) return '-₹' + fmt(-n); return '₹' + fmt(n); }
     const _mnShort = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     function fmtDate(d) { if (!d || d.length < 10) return d||'—'; const p = d.split('-'); return parseInt(p[2],10)+' '+_mnShort[parseInt(p[1],10)-1]; }
     function pct(n) { return (n||0).toFixed(1) + '%'; }
