@@ -3548,9 +3548,10 @@
         window._drawerProducts = drawerProducts;
 
         // ===== CARDS GRID (Product or Campaign view) =====
+        // Render direct .campaign-card children of #campaignsGrid (so the cards-collapse logic
+        // that measures grid.children works). #campaignsGrid keeps its static .grid-4 layout.
         let cardsHTML = '';
         if (groupBy === 'product') {
-            cardsHTML += '<div class="grid-4" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;">';
             cardsHTML += drawerProducts.map((p, pIdx) => {
                 const action = classifyPerf(p.roas, p.spend);
                 const actionLabel = action === 'scale' ? 'SCALE ▲' : action === 'watch' ? 'WATCH' : action === 'kill' ? 'KILL ▼' : 'TESTING';
@@ -3571,9 +3572,7 @@
                     </div>
                 </div>`;
             }).join('');
-            cardsHTML += '</div>';
         } else {
-            cardsHTML += '<div class="grid-4" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;">';
             cardsHTML += displayCampaigns.map((c, idx) => {
                 const origIdx = drawerCampaigns.indexOf(c);
                 const action = classifyPerf(c.roas, c.spend);
@@ -3595,11 +3594,9 @@
                     </div>
                 </div>`;
             }).join('');
-            cardsHTML += '</div>';
         }
         const _campGrid = document.getElementById('campaignsGrid');
-        // Override the static .grid-4 layout — we manage our own layout (toggle + inner cards grid)
-        _campGrid.style.display = 'block';
+        _campGrid.style.display = ''; // restore static .grid-4 layout
         _campGrid.innerHTML = cardsHTML;
 
         // ===== CARDS COLLAPSE: measure 1 row + hide overflow =====
@@ -7924,10 +7921,29 @@
             const adsets = c._adsets || [];
             const adsetsHTML = adsets.length ? adsets.map(as => {
                 const asColor = as.spend === 0 ? 'var(--text-sec)' : as.roas >= 3 ? 'var(--green)' : as.roas >= 1.5 ? 'var(--orange-warm)' : 'var(--red)';
-                return `<div class="adset-card adset-${as.spend === 0 ? 'testing' : as.roas >= 3 ? 'scale' : as.roas >= 1.5 ? 'watch' : 'kill'}">
+                const ads = as._ads || [];
+                const adsHTML = ads.length ? `<div style="font-size:9px;font-weight:700;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px;margin-top:8px;">${ads.length} Ad${ads.length>1?'s':''}</div>` +
+                    ads.map(ad => {
+                        const adClass = ad.spend === 0 ? 'testing' : ad.roas >= 3 ? 'scale' : ad.roas >= 1.5 ? 'watch' : 'kill';
+                        const adColor = ad.spend === 0 ? 'var(--text-sec)' : ad.roas >= 3 ? 'var(--green)' : ad.roas >= 1.5 ? 'var(--orange-warm)' : 'var(--red)';
+                        return `<div class="ad-card ad-${adClass}">
+                            <div class="ad-header">
+                                <span class="ad-name">${ad.name}</span>
+                                <span class="ad-roas" style="color:${adColor}">${ad.spend > 0 ? ad.roas.toFixed(2)+'x' : '—'} <span class="ad-roas-tag">ROAS</span></span>
+                            </div>
+                            <div class="ad-metrics">
+                                <span class="adset-metric">Spend <strong>${f(ad.spend)}</strong></span>
+                                <span class="adset-metric">Rev <strong>${f(ad.revenue)}</strong></span>
+                                <span class="adset-metric">CPR <strong>${f(ad.cpr)}</strong></span>
+                                <span class="adset-metric">CTR <strong>${ad.ctr.toFixed(1)}%</strong></span>
+                                <span class="adset-metric">${ad.purchases} purchases</span>
+                            </div>
+                        </div>`;
+                    }).join('') : '';
+                return `<div class="adset-card adset-${as.spend === 0 ? 'testing' : as.roas >= 3 ? 'scale' : as.roas >= 1.5 ? 'watch' : 'kill'}" onclick="event.stopPropagation(); this.classList.toggle('ad-expanded')" style="cursor:pointer;">
                     <div class="adset-header">
                         <span class="adset-name">${as.name}</span>
-                        <span class="adset-roas" style="color:${asColor}">${as.spend > 0 ? as.roas.toFixed(2)+'x' : 'N/A'}<span class="adset-roas-tag"> ROAS</span></span>
+                        <span class="adset-roas" style="color:${asColor}">${as.spend > 0 ? as.roas.toFixed(2)+'x' : 'N/A'}<span class="adset-roas-tag"> ROAS</span>${ads.length ? '<span class="adset-expand-icon">▼</span>' : ''}</span>
                     </div>
                     <div class="adset-metrics">
                         <span class="adset-metric">Spend <strong>${f(as.spend)}</strong></span>
@@ -7936,6 +7952,7 @@
                         <span class="adset-metric">CTR <strong>${as.ctr.toFixed(2)}%</strong></span>
                         <span class="adset-metric">${as.purchases} purchases</span>
                     </div>
+                    ${ads.length ? `<div class="ad-expand">${adsHTML}</div>` : ''}
                 </div>`;
             }).join('') : '<div class="no-drill-data" style="font-size:10px">No adset breakdown for this period</div>';
             return `<div class="adset-card adset-${cClass}" onclick="event.stopPropagation(); this.classList.toggle('ad-expanded')">
