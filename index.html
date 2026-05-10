@@ -2242,7 +2242,8 @@
                     if (refundedIdSet.has(oi.order_id)) negMap[pid].refunded += (oi.quantity||1);
                 });
             }
-            // RTO from shipments — extend negMap with rto units per product
+            // RTO shipments — used for both productNegatives.rto AND DATA.shipments.rtoCount below.
+            const rtoShipments = (shipRaw || []).filter(s => s.status === 'rto' || s.is_rto === true);
             if (rtoOrderIds.size) {
                 orderItems.forEach(oi => {
                     if (!rtoOrderIds.has(oi.order_id)) return;
