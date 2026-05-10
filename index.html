@@ -2467,9 +2467,15 @@
         const dm = DATA.dailyMetrics; if (!dm.length) return [];
         const last = new Date(dm[dm.length-1].d);
 
-        // For today/yesterday: return hourly data (24 rows) instead of single daily row
-        if (dur === 'today' && DATA.hourlyToday && DATA.hourlyToday.length && DATA.hourlyToday.some(h => h.orders > 0)) return DATA.hourlyToday;
-        if (dur === 'yesterday' && DATA.hourlyYesterday && DATA.hourlyYesterday.length && DATA.hourlyYesterday.some(h => h.orders > 0)) return DATA.hourlyYesterday;
+        // For today/yesterday: return hourly data instead of a single daily row.
+        // For TODAY specifically, trim hours that haven't happened yet in IST so the chart doesn't
+        // render 5+ hours of misleading flatline-zero across the future. User report 2026-05-10:
+        // chart was showing 22 of 24 hourly buckets at zero because they hadn't happened yet.
+        if (dur === 'today' && DATA.hourlyToday && DATA.hourlyToday.length && DATA.hourlyToday.some(h => h.orders > 0 || (h.adSpend||0) > 0)) {
+            const _istHour = parseInt(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', hour12: false }).format(new Date()), 10);
+            return DATA.hourlyToday.filter(h => (h.hour ?? 99) <= _istHour);
+        }
+        if (dur === 'yesterday' && DATA.hourlyYesterday && DATA.hourlyYesterday.length && DATA.hourlyYesterday.some(h => h.orders > 0 || (h.adSpend||0) > 0)) return DATA.hourlyYesterday;
         // Fallback to single-day row if hourly not available
         if (dur === 'today') return dm.filter(d => d.d === dm[dm.length-1].d);
         if (dur === 'yesterday') return dm.length>1 ? dm.filter(d => d.d === dm[dm.length-2].d) : [];
