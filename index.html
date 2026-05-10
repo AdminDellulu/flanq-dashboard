@@ -2073,9 +2073,10 @@
             // If caller set a limit OR we got fewer than a full page, we're done
             if (hasLimit || data.length < PAGE) break;
             offset += PAGE;
-            // Safety: cap at 10 pages (10,000 rows) to prevent infinite loops
-            if (offset >= 10000) {
-                console.warn(`⚠️ ${table}: hit 10K row safety cap. Data may be incomplete.`);
+            // Safety: cap at 50 pages (50,000 rows) to prevent runaway fetches.
+            // ad_spend is the heavy table (~4K rows now, growing). Bump if usage approaches the cap.
+            if (offset >= 50000) {
+                console.warn(`⚠️ ${table}: hit 50K row safety cap. Data may be incomplete.`);
                 break;
             }
         }
@@ -2087,7 +2088,7 @@
             const [dailyMetrics, products, adSpend, adCampaigns, shipRaw, settlements, payments, orderStats, research] = await Promise.all([
                 sq('daily_metrics', '?order=date.asc&limit=1000'),
                 sq('products', '?order=id'),
-                sq('ad_spend', '?order=date.desc&limit=10000'),
+                sq('ad_spend', '?order=date.desc'),
                 sq('ad_campaigns', '?order=id'),
                 sq('shipments', '?select=id,order_id,courier,status,is_rto,shipped_at,shipping_cost,rto_cost,cod_amount,cod_remitted,payment_mode,ndr_count,aggregator,actual_carrier,delivered_at,manifested_at,ndr_reason,rto_reason,current_location,awb_number,last_tracking_update,cod_remittance_amount,delivery_zone,dest_state,dest_city,charged_weight'),
                 sq('settlements', '?order=settled_at.desc'),
