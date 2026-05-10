@@ -3596,7 +3596,10 @@
             }).join('');
             cardsHTML += '</div>';
         }
-        document.getElementById('campaignsGrid').innerHTML = cardsHTML;
+        const _campGrid = document.getElementById('campaignsGrid');
+        // Override the static .grid-4 layout — we manage our own layout (toggle + inner cards grid)
+        _campGrid.style.display = 'block';
+        _campGrid.innerHTML = cardsHTML;
 
         // ===== CARDS COLLAPSE: measure 1 row + hide overflow =====
         requestAnimationFrame(() => {
@@ -7886,21 +7889,24 @@
     }
 
     function openMetricDrawer(metric) {
-        const cp = window._drawerCampaigns;
-        if (!cp || !cp.length) return;
+        // Honor the same group-by toggle the cards use; default = product
+        const groupBy = window._adsGroupBy || 'product';
+        const dataSet = groupBy === 'product' ? (window._drawerProducts || []) : (window._drawerCampaigns || []);
+        if (!dataSet.length) return;
         const f = window._fmtR;
+        const suffix = groupBy === 'product' ? 'Product' : 'Campaign';
 
         const config = {
-            spend:     { title: 'Ad Spend by Campaign',     key: 'spend',    format: v => f(v),           sort: (a,b) => b.spend - a.spend,    gradient: ['124,58,237', '59,130,246'],   valColor: '#7c3aed' },
-            roas:      { title: 'ROAS by Campaign',          key: 'roas',     format: v => v.toFixed(2)+'x', sort: (a,b) => b.roas - a.roas,     gradient: ['6,214,160', '59,130,246'],    valColor: null },
-            cpr:       { title: 'CPR by Campaign',           key: 'cpa',      format: v => f(v),           sort: (a,b) => (a.cpa||Infinity) - (b.cpa||Infinity), gradient: ['6,214,160', '124,58,237'], valColor: '#047857' },
-            purchases: { title: 'Purchases by Campaign',     key: 'purchases', format: v => v.toLocaleString(), sort: (a,b) => b.purchases - a.purchases, gradient: ['245,158,11', '236,72,153'], valColor: '#b45309' },
-            revenue:   { title: 'Ad Revenue by Campaign',    key: 'revenue',  format: v => f(v),           sort: (a,b) => b.revenue - a.revenue, gradient: ['22,163,74', '6,214,160'],     valColor: '#065f46' },
+            spend:     { title: `Ad Spend by ${suffix}`,    key: 'spend',    format: v => f(v),           sort: (a,b) => b.spend - a.spend,    gradient: ['124,58,237', '59,130,246'],   valColor: '#7c3aed' },
+            roas:      { title: `ROAS by ${suffix}`,         key: 'roas',     format: v => v.toFixed(2)+'x', sort: (a,b) => b.roas - a.roas,     gradient: ['6,214,160', '59,130,246'],    valColor: null },
+            cpr:       { title: `CPR by ${suffix}`,          key: 'cpa',      format: v => f(v),           sort: (a,b) => (a.cpa||Infinity) - (b.cpa||Infinity), gradient: ['6,214,160', '124,58,237'], valColor: '#047857' },
+            purchases: { title: `Purchases by ${suffix}`,    key: 'purchases', format: v => v.toLocaleString(), sort: (a,b) => b.purchases - a.purchases, gradient: ['245,158,11', '236,72,153'], valColor: '#b45309' },
+            revenue:   { title: `Ad Revenue by ${suffix}`,   key: 'revenue',  format: v => f(v),           sort: (a,b) => b.revenue - a.revenue, gradient: ['22,163,74', '6,214,160'],     valColor: '#065f46' },
         };
         const cfg = config[metric];
         if (!cfg) return;
 
-        const sorted = [...cp].sort(cfg.sort);
+        const sorted = [...dataSet].sort(cfg.sort);
 
         document.getElementById('drawerTitle').textContent = cfg.title;
         document.getElementById('drawerKpis').innerHTML = '';
