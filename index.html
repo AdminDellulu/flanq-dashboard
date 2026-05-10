@@ -2099,9 +2099,16 @@
 
             // Sanitize actual_carrier — sync-side stringification leaks '[object Object]' into the column.
             // Treat any '[object*' value as Unknown so it doesn't appear as a real carrier in scorecards.
+            // Also normalize delivery_zone — Velocity stores 'zone_a..f', ITL stores 'A..F'. The dashboard
+            // zoneOrder filter assumes uppercase A-F and silently drops 3,341 of 3,373 zone-tagged rows.
             const _BAD_CARRIER = /^\[object/;
             (shipRaw || []).forEach(s => {
-                if (s && typeof s.actual_carrier === 'string' && _BAD_CARRIER.test(s.actual_carrier)) s.actual_carrier = null;
+                if (!s) return;
+                if (typeof s.actual_carrier === 'string' && _BAD_CARRIER.test(s.actual_carrier)) s.actual_carrier = null;
+                if (typeof s.delivery_zone === 'string' && s.delivery_zone) {
+                    const z = s.delivery_zone.replace(/^zone[_\s-]*/i, '').toUpperCase();
+                    if (/^[A-F]$/.test(z)) s.delivery_zone = z;
+                }
             });
 
             DATA.dailyMetrics = dailyMetrics.map(d => ({
@@ -2201,8 +2208,18 @@
             // Product performance from order_items.
             // Single fetch with order_id included so we can reuse for negative-status mapping below.
             const orderItems = await sq('order_items', '?select=order_id,product_id,product_name,quantity,line_total,cogs');
+            // Build the voided/refunded ID set up-front so perfMap can EXCLUDE items whose parent order
+            // is voided. One real Flanq order (id=10318) was voided but kept its order_items, including a
+            // single ₹9.5Cr line that polluted Top SKU / Units Sold / Avg Margin / Concentration callout.
+            const _badOrderIds = new Set(orderStats.filter(o =>
+                o.financial_status === 'voided' ||
+                o.financial_status === 'refunded' ||
+                o.financial_status === 'partially_refunded' ||
+                o.fulfillment_status === 'restocked'
+            ).map(o => o.id));
             const perfMap = {};
             orderItems.forEach(oi => {
+                if (_badOrderIds.has(oi.order_id)) return; // skip line items from voided/refunded/restocked orders
                 const pid = oi.product_id || 0;
                 if (!perfMap[pid]) perfMap[pid] = { id: pid, name: oi.product_name||'Unknown', units: 0, revenue: 0, totalCogs: 0 };
                 perfMap[pid].units += (oi.quantity||1);
@@ -2266,8 +2283,9 @@
             const aggregatorMap = {}; // Velocity vs ITL level
             let totalCOD = 0, codRemittedAmt = 0, codLockedAmt = 0;
             const weeklyShipMap = {};
-            // Helper to build a stats bucket
-            function newBucket(name) { return { name, total: 0, delivered: 0, rto: 0, fulfilled: 0, pending: 0, cancelled: 0, cost: 0, rtoCost: 0, codTotal: 0, codRemitted: 0, codLocked: 0, ndrTotal: 0, prepaid: 0, cod: 0 }; }
+            // Helper to build a stats bucket — added inTransit + outForDelivery so the live shipment statuses
+            // (in_transit=279, out_for_delivery=5) aren't silently dropped from per-aggregator/carrier counts.
+            function newBucket(name) { return { name, total: 0, delivered: 0, rto: 0, fulfilled: 0, pending: 0, cancelled: 0, inTransit: 0, outForDelivery: 0, cost: 0, rtoCost: 0, codTotal: 0, codRemitted: 0, codLocked: 0, ndrTotal: 0, prepaid: 0, cod: 0 }; }
             shipRaw.forEach(s => {
                 const st = s.status||'unknown';
                 const cost = parseFloat(s.shipping_cost)||0;
@@ -2287,6 +2305,8 @@
                 else if (st === 'fulfilled') ag.fulfilled++;
                 else if (st === 'pending') ag.pending++;
                 else if (st === 'cancelled') ag.cancelled++;
+                else if (st === 'in_transit') ag.inTransit++;
+                else if (st === 'out_for_delivery') ag.outForDelivery++;
                 ag.ndrTotal += (s.ndr_count||0);
                 if (s.payment_mode === 'prepaid') ag.prepaid++; else if (s.payment_mode === 'cod') ag.cod++;
                 // Actual carrier-level stats
@@ -2298,6 +2318,8 @@
                 else if (st === 'fulfilled') cm.fulfilled++;
                 else if (st === 'pending') cm.pending++;
                 else if (st === 'cancelled') cm.cancelled++;
+                else if (st === 'in_transit') cm.inTransit++;
+                else if (st === 'out_for_delivery') cm.outForDelivery++;
                 cm.ndrTotal += (s.ndr_count||0);
                 if (s.payment_mode === 'prepaid') cm.prepaid++; else if (s.payment_mode === 'cod') cm.cod++;
                 // COD tracking — only count COD payment_mode shipments
@@ -2651,17 +2673,40 @@
         if (roas < 2 && totalAdSpend > 0) alerts += `<div class="alert-banner warning" style="display:flex;align-items:center;gap:10px;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>ROAS below 2x (${roas.toFixed(2)}x) — review underperforming campaigns</span></div>`;
         document.getElementById('overviewAlerts').innerHTML = alerts;
 
-        // Ad Efficiency Snapshot
-        const adData = DATA.adSpend || [];
-        const totalAdSpendAll = adData.reduce((s,a) => s + (a.spend||0), 0);
-        const totalAdRev = adData.reduce((s,a) => s + (a.revenue||0), 0);
+        // Ad Efficiency Snapshot — honor the duration selector and exclude the Meta - Aggregate roll-up.
+        // Column is `purchase_value` (Meta-attributed revenue) — the previous read of `a.revenue` always
+        // resolved to undefined, making every campaign's ROAS render as 0.0x.
+        const _adAll = DATA.adSpend || [];
+        const _adsLast = (DATA.dailyMetrics && DATA.dailyMetrics.length) ? DATA.dailyMetrics[DATA.dailyMetrics.length-1].d : null;
+        const adData = (() => {
+            if (dur === 'all' || !_adsLast) return _adAll.filter(a => a.campaign_name !== 'Meta - Aggregate');
+            if (dur === 'today') return _adAll.filter(a => a.date === _adsLast && a.campaign_name !== 'Meta - Aggregate');
+            if (dur === 'yesterday') {
+                const _y = DATA.dailyMetrics.length > 1 ? DATA.dailyMetrics[DATA.dailyMetrics.length-2].d : _adsLast;
+                return _adAll.filter(a => a.date === _y && a.campaign_name !== 'Meta - Aggregate');
+            }
+            if (dur === '7d' || dur === '30d') {
+                const _c = new Date(_adsLast); _c.setDate(_c.getDate() - (dur === '7d' ? 7 : 30));
+                const _cut = _c.toISOString().slice(0,10);
+                return _adAll.filter(a => a.date >= _cut && a.campaign_name !== 'Meta - Aggregate');
+            }
+            if (dur === 'custom') {
+                const _s = document.getElementById('customStart')?.value;
+                const _e = document.getElementById('customEnd')?.value;
+                if (_s && _e) return _adAll.filter(a => a.date >= _s && a.date <= _e && a.campaign_name !== 'Meta - Aggregate');
+                return [];
+            }
+            return _adAll.filter(a => a.campaign_name !== 'Meta - Aggregate');
+        })();
+        const totalAdSpendAll = adData.reduce((s,a) => s + (parseFloat(a.spend)||0), 0);
+        const totalAdRev = adData.reduce((s,a) => s + (parseFloat(a.purchase_value)||0), 0);
         const blendedROAS = totalAdSpendAll > 0 ? totalAdRev / totalAdSpendAll : 0;
         const campaigns = {};
         adData.forEach(a => {
             const name = a.campaign_name || 'Unknown';
             if (!campaigns[name]) campaigns[name] = {spend:0, rev:0};
-            campaigns[name].spend += a.spend||0;
-            campaigns[name].rev += a.revenue||0;
+            campaigns[name].spend += parseFloat(a.spend)||0;
+            campaigns[name].rev += parseFloat(a.purchase_value)||0;
         });
         const totalAdClicks = adData.reduce((s,a) => s + (a.clicks||0), 0);
         const avgCPC = totalAdClicks > 0 ? totalAdSpendAll / totalAdClicks : 0;
@@ -2680,7 +2725,8 @@
         const deliveredShips = shipRaw.filter(s => s.status === 'delivered');
         const deliveredCount = deliveredShips.length;
         const rtoCount = shipData.rtoCount || 0;
-        const ndrShips = shipRaw.filter(s => s.ndr_reason && s.ndr_reason.trim() !== '');
+        // NDR: prefer ndr_count > 0 over text presence — see comment at line ~5000.
+        const ndrShips = shipRaw.filter(s => (s.ndr_count||0) > 0 || (typeof s.ndr_reason === 'string' && s.ndr_reason.trim() !== ''));
         const ndrCount = ndrShips.length;
         const deliveryRate = totalShipped > 0 ? (deliveredCount / totalShipped * 100) : 0;
         const rtoRateShip = totalShipped > 0 ? (rtoCount / totalShipped * 100) : 0;
@@ -3009,7 +3055,8 @@
     function renderNdrSummaryCard() {
         const el = document.getElementById('ndrSummaryCard'); if (!el) return;
         const shipRaw = DATA.shipments.raw || [];
-        const ndrShipments = shipRaw.filter(s => s.ndr_reason && s.ndr_reason !== '');
+        // NDR: rows with ndr_count>0 OR explicit reason text (Flanq has 223 ndr_count>0 vs 6 with reason).
+        const ndrShipments = shipRaw.filter(s => (s.ndr_count||0) > 0 || (typeof s.ndr_reason === 'string' && s.ndr_reason.trim() !== ''));
         const ndrCount = ndrShipments.length;
         const totalShipped = shipRaw.length;
         const ndrRate = totalShipped > 0 ? (ndrCount / totalShipped * 100) : 0;
@@ -3568,7 +3615,26 @@
         const groupBy = window._adsGroupBy || 'product';
 
         // ===== AGGREGATE CAMPAIGNS INTO PRODUCTS =====
-        const productNorm = { 'BATX':'BATX','GLACE':'GLACE','Glace':'GLACE','Halo':'Halo','Furex':'Furex','Strapo':'Strapo','GlowBar':'GlowBar','Sonare':'Sonare','Brik':'Brik' };
+        // Flanq campaign prefixes use Unicode decorators (⌆, ⇪, ▶, etc.) and inconsistent casing.
+        // Strip leading non-letter chars + symbol suffixes and case-fold to a canonical product key
+        // so e.g. "⌆ Glowbar | CBO | 21 Mar" / "⇪ Glowbar" / "GlowBar" all collapse to one product.
+        // Returns the cleaned title-cased name for display.
+        const _normalizeProductKey = (raw) => {
+            if (!raw) return 'Other';
+            // Take part before '|' and before '▶' (sub-strategy markers), then strip leading non-letters.
+            let s = String(raw).split('|')[0].split('▶')[0].trim();
+            s = s.replace(/^[^A-Za-z0-9]+/, '').replace(/[^A-Za-z0-9 +\-]+$/, '').trim();
+            if (!s) return 'Other';
+            // Canonicalize known Flanq products by lowercase match
+            const _canon = { 'glowbar':'GlowBar','hielo':'Hielo','arx6':'ARX6','stellarion':'Stellarion',
+                'strapo':'Strapo','halo':'Halo','brik':'Brik','torque':'Torque','tula':'Tula',
+                'parke':'Parke','monaloo':'MonaLoo','pixelion':'Pixelion','dock+':'Dock+','dock':'Dock+',
+                'batx':'BATX','glace':'GLACE','furex':'Furex','sonare':'Sonare','aptc':'APTC' };
+            const lc = s.toLowerCase();
+            return _canon[lc] || s;
+        };
+        // Backwards-compatible alias retained for any read-only callers.
+        const productNorm = new Proxy({}, { get: (_, k) => _normalizeProductKey(k) });
         const prodAgg = {};
         displayCampaigns.forEach(c => {
             const rawKey = (c.name || '').split('|')[0].trim() || 'Other';
@@ -4009,19 +4075,12 @@
         // ROAS by Product — horizontal bar chart (maps campaign names to products)
         const am2El = document.getElementById('adsMetrics2');
         if (am2El && filteredAds.length) {
-            // Product name map: APTC = Automatic Page Turning Clock
-            const productFullNames = {
-                'APTC': 'Automatic Page Turning Clock',
-                'BATX': 'BATX', 'GLACE': 'GLACE', 'Glace': 'GLACE', 'Halo': 'Halo',
-                'Furex': 'Furex', 'Strapo': 'Strapo', 'GlowBar': 'GlowBar',
-                'Sonare': 'Sonare', 'Brik': 'Brik'
-            };
-            // Extract product from campaign_name: "APTC | CBO | 21 Mar" → "APTC", normalize via productFullNames
+            // Use _normalizeProductKey from above so glyph-prefixed Flanq campaign names collapse correctly.
             const productMap = {};
             filteredAds.filter(a => a.campaign_id && a.campaign_name !== 'Meta - Aggregate').forEach(a => {
                 const rawKey = (a.campaign_name || '').split('|')[0].trim();
                 if (!rawKey) return;
-                const pKey = productFullNames[rawKey] || rawKey; // normalize Glace/GLACE etc
+                const pKey = _normalizeProductKey(rawKey);
                 if (!productMap[pKey]) productMap[pKey] = { spend: 0, revenue: 0, impressions: 0, clicks: 0, purchases: 0 };
                 productMap[pKey].spend += parseFloat(a.spend) || 0;
                 productMap[pKey].revenue += parseFloat(a.purchase_value) || 0;
@@ -4200,16 +4259,11 @@
         // ===== PRODUCT FUNNEL HEATMAP =====
         const funnelProdEl = document.getElementById('funnelByProduct');
         if (funnelProdEl) {
-            const pfnMap = {
-                'APTC': 'APTC', 'BATX': 'BATX', 'GLACE': 'GLACE', 'Glace': 'GLACE',
-                'Halo': 'Halo', 'Furex': 'Furex', 'Strapo': 'Strapo',
-                'GlowBar': 'GlowBar', 'Sonare': 'Sonare', 'Brik': 'Brik'
-            };
             const pFunnel = {};
             filteredAds.filter(a => a.campaign_id && a.campaign_name !== 'Meta - Aggregate').forEach(a => {
                 const rawKey = (a.campaign_name || '').split('|')[0].trim();
                 if (!rawKey) return;
-                const pKey = pfnMap[rawKey] || rawKey;
+                const pKey = _normalizeProductKey(rawKey);
                 if (!pFunnel[pKey]) pFunnel[pKey] = { impressions: 0, reach: 0, clicks: 0, lpv: 0, atc: 0, checkout: 0, purchases: 0, spend: 0 };
                 pFunnel[pKey].impressions += parseInt(a.impressions)||0;
                 pFunnel[pKey].reach += parseInt(a.reach)||0;
@@ -4484,12 +4538,20 @@
         renderMarginCacChart(data, dur);
 
         // ====== CASH FLOW REALITY ======
-        const cashPrepaid = sum(data,'cashPrepaid') || (totalPrepaid > 0 ? totalRev * (totalPrepaid/(totalCOD+totalPrepaid+0.01)) : 0);
+        // Declared here (was previously declared 44 lines below at first usage of `prepaidPct` —
+        // the const Temporal Dead Zone made every line below throw ReferenceError on `totalPrepaid`).
+        const totalCOD = sum(data, 'cod'), totalPrepaid = sum(data, 'prepaid');
+        // Don't short-circuit a legit zero with `||` — distinguish "no cashPrepaid recorded" from "zero cashPrepaid".
+        const _cashPrepaidRaw = sum(data,'cashPrepaid');
+        const cashPrepaid = _cashPrepaidRaw > 0
+            ? _cashPrepaidRaw
+            : (totalPrepaid > 0 ? totalRev * (totalPrepaid/(totalCOD+totalPrepaid+0.01)) : 0);
         const cashCOD = sum(data,'cashCOD');
         const codRevenue = totalCOD > 0 ? totalRev * (totalCOD/(totalCOD+totalPrepaid+0.01)) : 0;
         const codPending = Math.max(0, codRevenue - cashCOD);
         const totalCashIn = cashPrepaid + cashCOD;
-        const totalCashOut = totalCOGS + totalAdSpend + totalShip + totalPkg;
+        // Include GST + gateway fees in cash outflows — they are real cash going out.
+        const totalCashOut = totalCOGS + totalAdSpend + totalShip + totalPkg + totalGST + totalGW;
         const netCashPosition = totalCashIn - totalCashOut;
         const codPct = totalOrders > 0 ? (totalCOD/totalOrders*100).toFixed(0) : 0;
         document.getElementById('cashFlowReality').innerHTML = `
@@ -4528,7 +4590,7 @@
         const adPerOrder = totalOrders > 0 ? totalAdSpend / totalOrders : 0;
         const shipPerOrder = totalOrders > 0 ? totalShip / totalOrders : 0;
         const feePerOrder = totalOrders > 0 ? (totalGW + totalGST + totalPkg + totalRtoCost) / totalOrders : 0;
-        const totalCOD = sum(data, 'cod'), totalPrepaid = sum(data, 'prepaid');
+        // (totalCOD/totalPrepaid are declared above in the Cash Flow Reality section.)
         const prepaidPct = totalOrders > 0 ? (totalPrepaid / totalOrders * 100) : 0;
         document.getElementById('unitEconBody').innerHTML = `
             <div class="unit-econ-grid">
@@ -4943,13 +5005,16 @@
         }
 
         // ====== RECOMPUTE ALL AGGREGATES FROM FILTERED DATA ======
-        function newBkt(name) { return { name, total: 0, delivered: 0, rto: 0, fulfilled: 0, pending: 0, cancelled: 0, cost: 0, rtoCost: 0, codTotal: 0, codRemitted: 0, codLocked: 0, ndrTotal: 0, prepaid: 0, cod: 0 }; }
+        function newBkt(name) { return { name, total: 0, delivered: 0, rto: 0, fulfilled: 0, pending: 0, cancelled: 0, inTransit: 0, outForDelivery: 0, cost: 0, rtoCost: 0, codTotal: 0, codRemitted: 0, codLocked: 0, ndrTotal: 0, prepaid: 0, cod: 0 }; }
         const statusMap = {}; let totalShipCost = 0;
         const carrierMap = {};
         const aggregatorMap = {};
         let totalCOD = 0, codRemittedAmt = 0, codLockedAmt = 0;
         const weeklyShipMap = {};
         let rtoShipCount = 0;
+        // NDR detection — prefer ndr_count > 0 over ndr_reason text (Flanq has 223 rows w/ ndr_count>0
+        // but only 6 with non-empty ndr_reason; relying on text undercounts NDRs ~36×).
+        const _isNdr = s => (s.ndr_count||0) > 0 || (typeof s.ndr_reason === 'string' && s.ndr_reason.trim() !== '');
 
         filteredRaw.forEach(s => {
             const st = s.status||'unknown';
@@ -4971,6 +5036,8 @@
             else if (st === 'fulfilled') ag.fulfilled++;
             else if (st === 'pending') ag.pending++;
             else if (st === 'cancelled') ag.cancelled++;
+            else if (st === 'in_transit') ag.inTransit++;
+            else if (st === 'out_for_delivery') ag.outForDelivery++;
             ag.ndrTotal += (s.ndr_count||0);
             if (s.payment_mode === 'prepaid') ag.prepaid++; else if (s.payment_mode === 'cod') ag.cod++;
             // Carrier bucket
@@ -4982,6 +5049,8 @@
             else if (st === 'fulfilled') cm.fulfilled++;
             else if (st === 'pending') cm.pending++;
             else if (st === 'cancelled') cm.cancelled++;
+            else if (st === 'in_transit') cm.inTransit++;
+            else if (st === 'out_for_delivery') cm.outForDelivery++;
             cm.ndrTotal += (s.ndr_count||0);
             if (s.payment_mode === 'prepaid') cm.prepaid++; else if (s.payment_mode === 'cod') cm.cod++;
             // COD tracking — only count COD payment_mode shipments
@@ -5008,15 +5077,16 @@
         const totalFiltered = filteredRaw.length;
         const cod = { total: totalCOD, remitted: codRemittedAmt, locked: codLockedAmt, remitRate: totalCOD > 0 ? (codRemittedAmt / totalCOD * 100) : 0 };
         const weeklyByCourier = Object.values(weeklyShipMap).sort((a,b) => a.week.localeCompare(b.week));
-        const deliveredSt = statuses.find(s => s.status === 'delivered');
-        const rtoSt = statuses.find(s => s.status === 'rto');
-        const fulfilledSt = statuses.find(s => s.status === 'fulfilled');
-        const pendingSt = statuses.find(s => s.status === 'pending');
-        const deliveredCount = deliveredSt ? deliveredSt.count : 0;
-        const rtoCount = rtoSt ? rtoSt.count : 0;
-        const fulfilledCount = fulfilledSt ? fulfilledSt.count : 0;
-        const pendingCount = pendingSt ? pendingSt.count : 0;
-        const activeShipments = fulfilledCount + pendingCount;
+        const _stCount = name => { const s = statuses.find(s => s.status === name); return s ? s.count : 0; };
+        const deliveredCount = _stCount('delivered');
+        const rtoCount = _stCount('rto');
+        const fulfilledCount = _stCount('fulfilled');
+        const pendingCount = _stCount('pending');
+        const inTransitCount = _stCount('in_transit');
+        const outForDeliveryCount = _stCount('out_for_delivery');
+        // "In Pipeline" = anything still moving — fulfilled is the warehouse-handed-off state, plus
+        // in_transit + out_for_delivery + pending. Previously only summed fulfilled+pending → undercounted by 284.
+        const activeShipments = fulfilledCount + pendingCount + inTransitCount + outForDeliveryCount;
         const rtoRate = totalFiltered > 0 ? (rtoShipCount / totalFiltered * 100) : 0;
         const deliveryRate = totalFiltered > 0 ? (deliveredCount / totalFiltered * 100) : 0;
         const avgCost = totalFiltered > 0 ? totalShipCost / totalFiltered : 0;
@@ -5036,7 +5106,7 @@
                 <div class="kpi-context">${rtoRate > 5 ? '<span class="down">Above 5%</span>' : '<span class="up">Within tolerance</span>'} <span class="muted">· ${pct(rtoRate)}</span></div></div>
             <div class="kpi-card blue"><div class="kpi-top"><span class="kpi-label">In Pipeline</span><span class="kpi-icon-sm">🔄</span></div>
                 <div class="kpi-value" style="color:var(--blue)">${activeShipments.toLocaleString()}</div>
-                <div class="kpi-context"><span class="muted">${fulfilledCount} fulfilled · ${pendingCount} pending</span></div></div>
+                <div class="kpi-context"><span class="muted">${fulfilledCount} fulfilled · ${inTransitCount} in transit · ${outForDeliveryCount} OFD · ${pendingCount} pending</span></div></div>
             <div class="kpi-card teal"><div class="kpi-top"><span class="kpi-label">Ship Cost</span><span class="kpi-icon-sm">💵</span></div>
                 <div class="kpi-value" style="color:var(--teal)">${fmtR(totalShipCost)}</div>
                 <div class="kpi-context"><span class="muted">Avg ${fmtR(avgCost)}/shipment</span></div></div>
@@ -5129,8 +5199,8 @@
         dc('statusFunnel');
         const ctxF = document.getElementById('statusFunnelChart');
         if (ctxF) {
-            const statusOrder = ['fulfilled', 'delivered', 'pending', 'rto', 'cancelled', 'restocked'];
-            const statusLabels = { fulfilled: 'Fulfilled', delivered: 'Delivered', pending: 'Pending', rto: 'RTO', cancelled: 'Cancelled', restocked: 'Restocked' };
+            const statusOrder = ['fulfilled', 'in_transit', 'out_for_delivery', 'delivered', 'pending', 'rto', 'cancelled', 'restocked'];
+            const statusLabels = { fulfilled: 'Fulfilled', in_transit: 'In Transit', out_for_delivery: 'Out for Delivery', delivered: 'Delivered', pending: 'Pending', rto: 'RTO', cancelled: 'Cancelled', restocked: 'Restocked' };
             const statusColors = { fulfilled: C.blue, delivered: C.green, pending: C.gold, rto: C.red, cancelled: '#94a3b8', restocked: C.purple };
             const sorted = statusOrder.filter(s => statuses.find(st => st.status === s)).map(s => statuses.find(st => st.status === s));
             charts['statusFunnel'] = new Chart(ctxF, {
@@ -5457,7 +5527,7 @@
         // ═══════════════════════════════════════════════════════════
 
         // Collect NDR/RTO data from raw shipments
-        const ndrShips = filteredRaw.filter(s => s.ndr_reason);
+        const ndrShips = filteredRaw.filter(_isNdr);
         const rtoShips = filteredRaw.filter(s => s.status === 'rto' || s.is_rto);
 
         // NDR Reason aggregation
@@ -5480,27 +5550,28 @@
         });
         const rtoReasons = Object.values(rtoReasonMap).sort((a,b) => b.count - a.count);
 
-        // NDR→RTO by carrier
+        // NDR→RTO by carrier — across both aggregators (was hard-restricted to ITL, dropping Velocity).
         const ndrCarrierMap = {};
-        filteredRaw.filter(s => s.actual_carrier && s.aggregator === 'ITL').forEach(s => {
+        filteredRaw.filter(s => s.actual_carrier).forEach(s => {
             const c = s.actual_carrier;
             if (!ndrCarrierMap[c]) ndrCarrierMap[c] = { carrier: c, total: 0, ndr: 0, ndrToRto: 0, ndrRecovered: 0 };
             ndrCarrierMap[c].total++;
-            if (s.ndr_reason) {
+            if (_isNdr(s)) {
                 ndrCarrierMap[c].ndr++;
-                if (s.status === 'rto') ndrCarrierMap[c].ndrToRto++;
+                if (s.status === 'rto' || s.is_rto) ndrCarrierMap[c].ndrToRto++;
                 if (s.status === 'delivered') ndrCarrierMap[c].ndrRecovered++;
             }
         });
         const ndrCarriers = Object.values(ndrCarrierMap).filter(c => c.ndr > 0).sort((a,b) => b.ndr - a.ndr);
 
-        // COD vs Prepaid RTO
+        // COD vs Prepaid RTO — across both aggregators (Velocity has 6,317 shipments, 2,976 COD;
+        // restricting to ITL excluded 33% of volume).
         const payModeBuckets = { cod: { total: 0, rto: 0, ndr: 0 }, prepaid: { total: 0, rto: 0, ndr: 0 } };
-        filteredRaw.filter(s => s.aggregator === 'ITL').forEach(s => {
+        filteredRaw.forEach(s => {
             const pm = s.payment_mode === 'cod' ? 'cod' : 'prepaid';
             payModeBuckets[pm].total++;
-            if (s.status === 'rto') payModeBuckets[pm].rto++;
-            if (s.ndr_reason) payModeBuckets[pm].ndr++;
+            if (s.status === 'rto' || s.is_rto) payModeBuckets[pm].rto++;
+            if (_isNdr(s)) payModeBuckets[pm].ndr++;
         });
 
         // Product × RTO correlation (join order_items + products)
@@ -6339,13 +6410,23 @@
     // ==================== RENDER: STRATEGY (Enhanced — Edits 5+6) ====================
     function renderStrategy() {
         const dm = DATA.dailyMetrics;
-        const marchData = dm.filter(d => d.d.startsWith('2026-03'));
-        const totalRev = sum(marchData,'rev'), totalProfit = sum(marchData,'profit'), totalOrders = sum(marchData,'orders');
-        const avgMargin = marchData.length>0?marchData.reduce((a,d)=>a+d.margin,0)/marchData.length:0;
+        // Current calendar month in IST — was previously hardcoded to '2026-03', freezing the entire
+        // Strategy tab to March data regardless of "today". Re-anchor on the current IST month.
+        const _istToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()); // 'YYYY-MM-DD'
+        const _istYearMonth = _istToday.slice(0,7);
+        const _istYear = parseInt(_istYearMonth.slice(0,4), 10);
+        const _istMonth = parseInt(_istYearMonth.slice(5,7), 10); // 1..12
+        const _daysInMonth = new Date(_istYear, _istMonth, 0).getDate();
+        const _monthName = new Date(_istYear, _istMonth-1, 1).toLocaleString('en-US', { month: 'long' });
+        const monthData = dm.filter(d => d.d && d.d.startsWith(_istYearMonth));
+        // Recompute weighted metrics from sums (was averaging cac/margin per-day which deflates with low-revenue days).
+        const totalRev = sum(monthData,'rev'), totalProfit = sum(monthData,'profit'), totalOrders = sum(monthData,'orders');
+        const totalCogs = sum(monthData,'cogs');
+        const avgMargin = totalRev > 0 ? (totalProfit / totalRev * 100) : 0;
         const avgAOV = totalOrders>0?totalRev/totalOrders:0;
-        const avgCAC = marchData.length>0?marchData.reduce((a,d)=>a+d.cac,0)/marchData.length:0;
-        const totalAd = sum(marchData,'adSpend');
-        const roas = totalRev/(totalAd||1);
+        const totalAd = sum(monthData,'adSpend');
+        const avgCAC = totalOrders > 0 ? (totalAd / totalOrders) : 0; // weighted CAC = monthly spend / monthly orders
+        const roas = totalAd > 0 ? totalRev/totalAd : 0;
         const rtoRate = DATA.shipments.total > 0 ? (DATA.shipments.rtoCount||0)/DATA.shipments.total*100 : 0;
         const prepaidPct = DATA.orders.total > 0 ? (DATA.orders.prepaidOrders/DATA.orders.total*100) : 0;
 
@@ -6358,10 +6439,10 @@
             <div class="kpi-card purple"><div class="kpi-top"><span class="kpi-label">Health Score</span><span class="kpi-icon-sm">💪</span></div>
                 <div class="kpi-value" style="color:${healthScore>70?'var(--green)':healthScore>40?'var(--gold)':'var(--red)'}">${healthScore}/100</div>
                 <div class="kpi-context">${healthScore>70?'<span class="up">Strong</span>':healthScore>40?'<span class="neutral">Moderate</span>':'<span class="down">Needs work</span>'}</div></div>
-            <div class="kpi-card teal"><div class="kpi-top"><span class="kpi-label">March Revenue</span><span class="kpi-icon-sm">📈</span></div>
+            <div class="kpi-card teal"><div class="kpi-top"><span class="kpi-label">${_monthName} Revenue</span><span class="kpi-icon-sm">📈</span></div>
                 <div class="kpi-value" style="color:var(--purple)">${fmtR(totalRev)}</div>
                 <div class="kpi-context"><span class="muted">${totalOrders} orders · AOV ${fmtR(avgAOV)}</span></div></div>
-            <div class="kpi-card green"><div class="kpi-top"><span class="kpi-label">March Profit</span><span class="kpi-icon-sm">🎯</span></div>
+            <div class="kpi-card green"><div class="kpi-top"><span class="kpi-label">${_monthName} Profit</span><span class="kpi-icon-sm">🎯</span></div>
                 <div class="kpi-value" style="color:${totalProfit>0?'var(--teal)':'var(--red)'}">${fmtR(totalProfit)}</div>
                 <div class="kpi-context"><span class="muted">Margin: ${pct(avgMargin)}</span></div></div>
         `;
@@ -6426,8 +6507,8 @@
         const zeroCogs = pp.filter(p => p.totalCogs === 0 && p.units > 0);
         const killCampaigns = cp.filter(c => c.roas < 1.5 && c.spend > 0);
         const scaleCampaigns = cp.filter(c => c.roas >= 3 && c.spend > 0);
-        const daysInMonth = 31;
-        const daysWithData = marchData.length;
+        const daysInMonth = _daysInMonth;
+        const daysWithData = monthData.length;
         const projectedRev = daysWithData > 0 ? (totalRev / daysWithData) * daysInMonth : 0;
         const projectedOrders = daysWithData > 0 ? Math.round((totalOrders / daysWithData) * daysInMonth) : 0;
         const projectedProfit = daysWithData > 0 ? (totalProfit / daysWithData) * daysInMonth : 0;
@@ -6479,13 +6560,13 @@
         // Growth chart
         dc('growth'); const cd = chartDefaults();
         const ctx = document.getElementById('growthChart');
-        if (ctx && marchData.length) {
+        if (ctx && monthData.length) {
             let cumRev = 0;
-            const cumData = marchData.map(d => { cumRev += d.rev; return cumRev; });
-            const targetDaily = revTarget / 31;
-            const targetLine = marchData.map((_,i) => targetDaily*(i+1));
+            const cumData = monthData.map(d => { cumRev += d.rev; return cumRev; });
+            const targetDaily = revTarget / _daysInMonth;
+            const targetLine = monthData.map((_,i) => targetDaily*(i+1));
             charts['growth'] = new Chart(ctx, { type: 'line', data: {
-                labels: marchData.map(d=>fmtDate(d.d)),
+                labels: monthData.map(d=>fmtDate(d.d)),
                 datasets: [
                     { label:'Actual', data:cumData, borderColor:B.purple, backgroundColor:'rgba(124,58,237,0.08)', borderWidth:3, tension:0.4, fill:true },
                     { label:'Target (₹35L)', data:targetLine, borderColor:B.gold, borderWidth:2, borderDash:[5,5], tension:0, pointRadius:0 }
