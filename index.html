@@ -2488,10 +2488,14 @@
                 rev: sum(rows,'rev'), net: sum(rows,'net'), cogs: sum(rows,'cogs'),
                 gst: sum(rows,'gst'), pkg: sum(rows,'pkg'), ship: sum(rows,'ship'),
                 gw: sum(rows,'gw'), adSpend: sum(rows,'adSpend'), rtoCost: sum(rows,'rtoCost'),
-                margin: rows.length ? rows.reduce((a,r)=>a+(r.margin||0),0)/rows.length : 0,
+                // Recompute % metrics from numerator/denominator sums (was unweighted day-mean
+                // which under-weighted high-revenue days).
+                margin: sum(rows,'rev') > 0 ? (sum(rows,'profit') / sum(rows,'rev') * 100) : 0,
                 aov: sum(rows,'orders')>0 ? sum(rows,'rev')/sum(rows,'orders') : 0,
-                profit: sum(rows,'profit'), cac: rows.length ? rows.reduce((a,r)=>a+(r.cac||0),0)/rows.length : 0,
-                delivered: sum(rows,'delivered'), rto: sum(rows,'rto'), rtoRate: rows.length ? rows.reduce((a,r)=>a+(r.rtoRate||0),0)/rows.length : 0,
+                profit: sum(rows,'profit'),
+                cac: sum(rows,'orders') > 0 ? (sum(rows,'adSpend') / sum(rows,'orders')) : 0,
+                delivered: sum(rows,'delivered'), rto: sum(rows,'rto'),
+                rtoRate: sum(rows,'orders') > 0 ? (sum(rows,'rto') / sum(rows,'orders') * 100) : 0,
                 cashPrepaid: sum(rows,'cashPrepaid'), cashCOD: sum(rows,'cashCOD'),
                 _days: rows.length
             };
@@ -2604,7 +2608,8 @@
         const rtoRate = totalOrders > 0 ? (sum(data,'rto')/totalOrders)*100 : 0;
         const prepaidPct = totalOrders > 0 ? (totalPrepaid/totalOrders)*100 : 0;
         const margin = totalRev > 0 ? (totalProfit/totalRev)*100 : 0;
-        const avgCac = data.length > 0 ? data.reduce((a,d)=>a+d.cac,0)/data.length : 0;
+        // Weighted CAC = total spend / total orders (was unweighted day-mean of d.cac which over-weighted low-volume days).
+        const avgCac = totalOrders > 0 ? totalAdSpend / totalOrders : 0;
 
         const allData = DATA.dailyMetrics;
         let prevRev = 0, prevProfit = 0, prevOrders = 0, prevAdSpend = 0, prevRoas = 0;
@@ -4347,7 +4352,8 @@
         const grossMargin = totalRev>0?(grossProfit/totalRev*100):0;
         const opex = totalAdSpend + totalShip + totalPkg + totalGW + totalGST + totalRtoCost;
         const avgROAS = totalAdSpend>0?(totalRev/totalAdSpend):0;
-        const avgCAC = data.length>0?data.reduce((a,d)=>a+d.cac,0)/data.length:0;
+        // Weighted CAC = total spend / total orders.
+        const avgCAC = totalOrders > 0 ? totalAdSpend / totalOrders : 0;
         const avgAOV = totalOrders>0?totalRev/totalOrders:0;
         const profitPerOrder = totalOrders>0?totalProfit/totalOrders:0;
 
