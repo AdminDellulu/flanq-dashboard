@@ -3424,13 +3424,18 @@
         const isActiveCampaign = name => (_campLastDate[name] || '') >= _activeCutoff;
         const activeCt = cp.filter(c => isActiveCampaign(c.name)).length;
 
-        // Campaign signal pills + iOS-style Active Only toggle (far right)
+        // Campaign signal pills + Group-by toggle + iOS-style Active Only toggle
+        const _gb = window._adsGroupBy || 'product';
         document.getElementById('campaignSummary').innerHTML = `
             <span class="signal-pill pill-scale"><span class="signal-count">${scaleCampaigns.length}</span> Scale ▲</span>
             <span class="signal-pill pill-watch"><span class="signal-count">${watchCampaigns.length}</span> Watch</span>
             <span class="signal-pill pill-kill"><span class="signal-count">${killCampaigns.length}</span> Kill ▼</span>
             <span class="signal-divider"></span>
             <span class="signal-summary"><strong>${isActiveOnly ? activeCt : cp.length}</strong> campaigns · ROAS <strong>${blendedROAS.toFixed(2)}x</strong></span>
+            <span style="display:inline-flex;border:1px solid var(--border);border-radius:999px;overflow:hidden;font-size:11px;font-weight:700;">
+                <button onclick="window._adsGroupBy='product';renderAds();" style="padding:5px 12px;border:none;cursor:pointer;background:${_gb==='product'?'var(--purple)':'transparent'};color:${_gb==='product'?'#fff':'var(--text-sec)'};">By Product</button>
+                <button onclick="window._adsGroupBy='campaign';renderAds();" style="padding:5px 12px;border:none;cursor:pointer;background:${_gb==='campaign'?'var(--purple)':'transparent'};color:${_gb==='campaign'?'#fff':'var(--text-sec)'};">By Campaign</button>
+            </span>
             <span class="signal-toggle-wrap ${isActiveOnly ? 'active' : ''}" onclick="window._adsActiveOnly=!window._adsActiveOnly;renderAds();">
                 <span class="signal-toggle-label">Active Only</span>
                 <span class="signal-toggle-track"><span class="signal-toggle-thumb"></span></span>
@@ -3518,10 +3523,6 @@
 
         // ===== GROUP-BY TOGGLE (default: Product) =====
         const groupBy = window._adsGroupBy || 'product';
-        const _grpToggle = `<div style="display:flex;gap:0;margin-bottom:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden;width:fit-content;font-size:11px;">
-            <button onclick="window._adsGroupBy='product';renderAds();" style="padding:6px 14px;border:none;background:${groupBy==='product'?'var(--purple)':'transparent'};color:${groupBy==='product'?'#fff':'var(--text-sec)'};font-weight:600;cursor:pointer;">By Product</button>
-            <button onclick="window._adsGroupBy='campaign';renderAds();" style="padding:6px 14px;border:none;background:${groupBy==='campaign'?'var(--purple)':'transparent'};color:${groupBy==='campaign'?'#fff':'var(--text-sec)'};font-weight:600;cursor:pointer;">By Campaign</button>
-        </div>`;
 
         // ===== AGGREGATE CAMPAIGNS INTO PRODUCTS =====
         const productNorm = { 'BATX':'BATX','GLACE':'GLACE','Glace':'GLACE','Halo':'Halo','Furex':'Furex','Strapo':'Strapo','GlowBar':'GlowBar','Sonare':'Sonare','Brik':'Brik' };
@@ -3547,7 +3548,7 @@
         window._drawerProducts = drawerProducts;
 
         // ===== CARDS GRID (Product or Campaign view) =====
-        let cardsHTML = _grpToggle;
+        let cardsHTML = '';
         if (groupBy === 'product') {
             cardsHTML += '<div class="grid-4" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;">';
             cardsHTML += drawerProducts.map((p, pIdx) => {
@@ -3666,11 +3667,92 @@
         }
         const cptEl = document.getElementById('campaignPerfTable');
         if (cptEl) {
+            const headerLabel = groupBy === 'product' ? 'Product / Campaign' : 'Campaign';
             let tableHTML = `<table class="cpt">
                 <thead><tr>
-                    <th>Campaign</th><th>ROAS</th><th>Spend</th><th>Revenue</th><th>CPA</th><th>Purch</th><th>CTR</th><th>Status</th>
+                    <th>${headerLabel}</th><th>ROAS</th><th>Spend</th><th>Revenue</th><th>CPA</th><th>Purch</th><th>CTR</th><th>Status</th>
                 </tr></thead><tbody>`;
 
+            // PRODUCT VIEW: top-level rows are products; expand → campaigns → adsets → ads
+            if (groupBy === 'product') {
+                drawerProducts.forEach((p, pIdx) => {
+                    const pAction = classifyPerf(p.roas, p.spend);
+                    const pActionLabel = pAction === 'scale' ? 'SCALE' : pAction === 'watch' ? 'WATCH' : pAction === 'kill' ? 'KILL' : 'TEST';
+                    const pid = `cpt-p${pIdx}`;
+                    const hasCampaigns = p._campaigns && p._campaigns.length > 0;
+                    tableHTML += `<tr class="cpt-campaign" onclick="document.querySelectorAll('.${pid}').forEach(el=>el.classList.toggle('open'));this.querySelector('.cpt-expand')?.classList.toggle('open');" style="background:rgba(124,58,237,0.04);">
+                        <td><div class="cpt-name">
+                            ${hasCampaigns ? '<span class="cpt-expand">▶</span>' : '<span style="width:14px;display:inline-block;"></span>'}
+                            <span class="cpt-label" title="${p.name}" style="font-weight:800;">${p.name} <span style="color:var(--text-sec);font-weight:500;font-size:10px;">· ${p._campaigns.length} campaign${p._campaigns.length>1?'s':''}</span></span>
+                        </div></td>
+                        <td><span class="cpt-roas" style="${roasStyle(p.roas, p.spend)}">${p.spend > 0 ? p.roas.toFixed(2)+'x' : '—'}</span></td>
+                        <td>${fmtR(p.spend)}</td>
+                        <td style="color:var(--text);">${fmtR(p.revenue)}</td>
+                        <td><span style="${cpaStyle(p.cpa)}">${p.purchases > 0 ? fmtR(p.cpa) : '—'}</span></td>
+                        <td style="font-weight:800;">${p.purchases}</td>
+                        <td>${p.ctr.toFixed(2)}%</td>
+                        <td><span class="cpt-badge ${pAction}">${pActionLabel}</span></td>
+                    </tr>`;
+
+                    p._campaigns.forEach((c, cIdx) => {
+                        const cAction = classifyPerf(c.roas, c.spend);
+                        const cid = `${pid}-c${cIdx}`;
+                        const hasAdsets = c._adsets && c._adsets.length > 0;
+                        tableHTML += `<tr class="cpt-adset cpt-sub ${pid}" ${hasAdsets ? `onclick="event.stopPropagation();document.querySelectorAll('.${cid}').forEach(el=>el.classList.toggle('open'));this.querySelector('.cpt-expand')?.classList.toggle('open');" style="cursor:pointer;"` : ''}>
+                            <td style="padding-left:32px;"><div class="cpt-name">
+                                ${hasAdsets ? '<span class="cpt-expand" style="font-size:9px;">▶</span>' : '<span style="width:14px;display:inline-block;"></span>'}
+                                <span style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${c.name}">${c.name}</span>
+                            </div></td>
+                            <td><span style="${roasStyle(c.roas, c.spend)};font-weight:700;">${c.spend > 0 ? c.roas.toFixed(2)+'x' : '—'}</span></td>
+                            <td>${fmtR(c.spend)}</td>
+                            <td>${fmtR(c.revenue)}</td>
+                            <td><span style="${cpaStyle(c.cpa)}">${c.purchases > 0 ? fmtR(c.cpa) : '—'}</span></td>
+                            <td>${c.purchases}</td>
+                            <td>${c.ctr.toFixed(2)}%</td>
+                            <td><span class="cpt-badge ${cAction}" style="font-size:9px;padding:1px 7px;">${cAction === 'scale' ? 'SCALE' : cAction === 'watch' ? 'WATCH' : cAction === 'kill' ? 'KILL' : '—'}</span></td>
+                        </tr>`;
+
+                        (c._adsets || []).forEach((as, asIdx) => {
+                            const asRoas = as.spend > 0 ? as.revenue / as.spend : 0;
+                            const asCpa = as.purchases > 0 ? as.spend / as.purchases : 0;
+                            const asCtr = as.impressions > 0 ? (as.clicks / as.impressions * 100) : 0;
+                            const asid = `${cid}-as${asIdx}`;
+                            const hasAds = as._ads && as._ads.length > 0;
+                            tableHTML += `<tr class="cpt-ad cpt-sub ${cid}" ${hasAds ? `onclick="event.stopPropagation();document.querySelectorAll('.${asid}').forEach(el=>el.classList.toggle('open'));this.querySelector('.cpt-expand')?.classList.toggle('open');" style="cursor:pointer;"` : ''}>
+                                <td style="padding-left:56px;"><div class="cpt-name">
+                                    ${hasAds ? '<span class="cpt-expand" style="font-size:8px;">▶</span>' : '<span style="width:14px;display:inline-block;"></span>'}
+                                    <span style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${as.name}">${as.name}</span>
+                                </div></td>
+                                <td><span style="${roasStyle(asRoas, as.spend)}">${as.spend > 0 ? asRoas.toFixed(2)+'x' : '—'}</span></td>
+                                <td>${fmtR(as.spend)}</td>
+                                <td>${fmtR(as.revenue)}</td>
+                                <td><span style="${cpaStyle(asCpa)}">${as.purchases > 0 ? fmtR(asCpa) : '—'}</span></td>
+                                <td>${as.purchases}</td>
+                                <td>${asCtr.toFixed(2)}%</td>
+                                <td></td>
+                            </tr>`;
+
+                            (as._ads || []).forEach(ad => {
+                                const adRoas = ad.spend > 0 ? ad.revenue / ad.spend : 0;
+                                const adCpa = ad.purchases > 0 ? ad.spend / ad.purchases : 0;
+                                const adCtr = ad.impressions > 0 ? (ad.clicks / ad.impressions * 100) : 0;
+                                tableHTML += `<tr class="cpt-ad cpt-sub ${asid}">
+                                    <td style="padding-left:80px;"><span style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;color:var(--text-sec);" title="${ad.name}">${ad.name}</span></td>
+                                    <td><span style="${roasStyle(adRoas, ad.spend)}">${ad.spend > 0 ? adRoas.toFixed(2)+'x' : '—'}</span></td>
+                                    <td>${fmtR(ad.spend)}</td>
+                                    <td>${fmtR(ad.revenue)}</td>
+                                    <td><span style="${cpaStyle(adCpa)}">${ad.purchases > 0 ? fmtR(adCpa) : '—'}</span></td>
+                                    <td>${ad.purchases}</td>
+                                    <td>${adCtr.toFixed(2)}%</td>
+                                    <td></td>
+                                </tr>`;
+                            });
+                        });
+                    });
+                });
+                tableHTML += `</tbody></table>`;
+                cptEl.innerHTML = tableHTML;
+            } else {
             displayCampaigns.forEach((c, idx) => {
                 const action = classifyPerf(c.roas, c.spend);
                 const actionLabel = action === 'scale' ? 'SCALE' : action === 'watch' ? 'WATCH' : action === 'kill' ? 'KILL' : 'TEST';
@@ -3736,6 +3818,7 @@
             });
             tableHTML += `</tbody></table>`;
             cptEl.innerHTML = tableHTML;
+            } // end else
         }
 
         // ===== SIDEBAR: Spend Allocation + Top/Bottom performers (1/4 width) =====
