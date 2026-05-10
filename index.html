@@ -2086,7 +2086,7 @@
     async function loadAllData() {
         try {
             const [dailyMetrics, products, adSpend, adCampaigns, shipRaw, settlements, payments, orderStats, research] = await Promise.all([
-                sq('daily_metrics', '?order=date.asc&limit=1000'),
+                sq('daily_metrics', '?order=date.asc'),
                 sq('products', '?order=id'),
                 sq('ad_spend', '?order=date.desc'),
                 sq('ad_campaigns', '?order=id'),
@@ -2096,6 +2096,13 @@
                 sq('orders', '?select=id,total,payment_type,order_date,financial_status,fulfillment_status'),
                 sq('product_research', '?order=compound_score.desc.nullslast&limit=100').catch(() => [])
             ]);
+
+            // Sanitize actual_carrier — sync-side stringification leaks '[object Object]' into the column.
+            // Treat any '[object*' value as Unknown so it doesn't appear as a real carrier in scorecards.
+            const _BAD_CARRIER = /^\[object/;
+            (shipRaw || []).forEach(s => {
+                if (s && typeof s.actual_carrier === 'string' && _BAD_CARRIER.test(s.actual_carrier)) s.actual_carrier = null;
+            });
 
             DATA.dailyMetrics = dailyMetrics.map(d => ({
                 d: d.date, orders: d.total_orders||0, cod: d.cod_orders||0, prepaid: d.prepaid_orders||0,
@@ -2122,7 +2129,15 @@
                 if (goFetchRes.ok) {
                     const gf = await goFetchRes.json();
                     const t = gf?.today || (Array.isArray(gf) && gf[0]?.today) || null;
-                    if (t && t.total_orders > 0) {
+                    // Inject if ANY money/activity has happened today — gating purely on order count silently dropped
+                    // live ad spend on slow-order days. Today's adSpend matters even when orders=0.
+                    const _hasToday = t && (
+                        (t.total_orders||0) > 0 ||
+                        parseFloat(t.total_ad_spend||0) > 0 ||
+                        parseFloat(t.gross_revenue||0) > 0 ||
+                        parseFloat(t.total_shipping||0) > 0
+                    );
+                    if (_hasToday) {
                         const liveToday = {
                             d: t.date, orders: t.total_orders||0, cod: t.cod_orders||0, prepaid: t.prepaid_orders||0,
                             rev: parseFloat(t.gross_revenue)||0, net: parseFloat(t.net_revenue)||0,
@@ -2169,10 +2184,13 @@
                 console.log('[HOURLY] Today hours with orders:', DATA.hourlyToday.filter(h=>h.orders>0).length, ', Yesterday:', DATA.hourlyYesterday.filter(h=>h.orders>0).length);
             } catch(e) { console.warn('[HOURLY] fetch failed:', e); }
 
-            // Edit 2: Track order-level negative statuses
-            const cancelledOrders = orderStats.filter(o => o.fulfillment_status === 'cancelled');
-            const refundedOrders = orderStats.filter(o => o.financial_status === 'refunded' || o.financial_status === 'partially_refunded' || o.financial_status === 'voided');
-            const rtoOrders = orderStats.filter(o => o.fulfillment_status === 'rto');
+            // Track order-level negative statuses.
+            // orders.fulfillment_status enum is fulfilled/pending/restocked/partial — NOT cancelled/rto.
+            // Cancellations live in orders.financial_status='voided'; RTO is shipping-side (shipments.status='rto' / is_rto).
+            const cancelledOrders = orderStats.filter(o => o.financial_status === 'voided');
+            const refundedOrders = orderStats.filter(o => o.financial_status === 'refunded' || o.financial_status === 'partially_refunded');
+            const rtoOrderIds = new Set((shipRaw || []).filter(s => s.is_rto === true || s.status === 'rto' || s.status === 'rto_in_transit' || s.status === 'rto_delivered').map(s => s.order_id));
+            const rtoOrders = orderStats.filter(o => rtoOrderIds.has(o.id));
             DATA.orderStatuses = {
                 cancelled: cancelledOrders.length,
                 refunded: refundedOrders.length,
@@ -2180,8 +2198,9 @@
                 total: orderStats.length
             };
 
-            // Product performance from order_items
-            const orderItems = await sq('order_items', '?select=product_id,product_name,quantity,line_total,cogs');
+            // Product performance from order_items.
+            // Single fetch with order_id included so we can reuse for negative-status mapping below.
+            const orderItems = await sq('order_items', '?select=order_id,product_id,product_name,quantity,line_total,cogs');
             const perfMap = {};
             orderItems.forEach(oi => {
                 const pid = oi.product_id || 0;
@@ -2193,25 +2212,28 @@
             DATA.productPerformance = Object.values(perfMap).sort((a, b) => b.revenue - a.revenue);
             DATA.productPerformance.forEach(p => { p.margin = p.revenue > 0 ? ((p.revenue - p.totalCogs) / p.revenue * 100) : 0; });
 
-            // Edit 2: Cross-reference product negatives from cancelled/refunded orders + RTO shipments
-            // Get order_items for cancelled orders
-            const cancelledIds = cancelledOrders.map(o => o.id);
-            const refundedIds = refundedOrders.map(o => o.id);
+            // Cross-reference product negatives from cancelled/refunded orders + RTO shipments.
+            // Reuse the orderItems array fetched above (saves a 19K-row redundant fetch). Use Sets for O(1) lookups.
+            const cancelledIdSet = new Set(cancelledOrders.map(o => o.id));
+            const refundedIdSet = new Set(refundedOrders.map(o => o.id));
             const negMap = {};
-            // Count from order_items which orders are negative
-            if (cancelledIds.length || refundedIds.length) {
-                try {
-                    const negItems = await sq('order_items', '?select=product_id,product_name,quantity,order_id');
-                    negItems.forEach(oi => {
-                        const pid = oi.product_id || 0;
-                        if (!negMap[pid]) negMap[pid] = { cancelled: 0, refunded: 0, rto: 0 };
-                        if (cancelledIds.includes(oi.order_id)) negMap[pid].cancelled += (oi.quantity||1);
-                        if (refundedIds.includes(oi.order_id)) negMap[pid].refunded += (oi.quantity||1);
-                    });
-                } catch(e) { console.log('Negative metrics partial:', e); }
+            if (cancelledIdSet.size || refundedIdSet.size) {
+                orderItems.forEach(oi => {
+                    const pid = oi.product_id || 0;
+                    if (!negMap[pid]) negMap[pid] = { cancelled: 0, refunded: 0, rto: 0 };
+                    if (cancelledIdSet.has(oi.order_id)) negMap[pid].cancelled += (oi.quantity||1);
+                    if (refundedIdSet.has(oi.order_id)) negMap[pid].refunded += (oi.quantity||1);
+                });
             }
-            // RTO from shipments
-            const rtoShipments = shipRaw.filter(s => s.status === 'rto');
+            // RTO from shipments — extend negMap with rto units per product
+            if (rtoOrderIds.size) {
+                orderItems.forEach(oi => {
+                    if (!rtoOrderIds.has(oi.order_id)) return;
+                    const pid = oi.product_id || 0;
+                    if (!negMap[pid]) negMap[pid] = { cancelled: 0, refunded: 0, rto: 0 };
+                    negMap[pid].rto += (oi.quantity||1);
+                });
+            }
             DATA.productNegatives = negMap;
 
             DATA.adSpend = adSpend;
@@ -2324,17 +2346,20 @@
                 prepaidOrders: orderStats.filter(o => o.payment_type === 'Prepaid').length
             };
 
-            // Load reconciliation + quality + COD remittance data (non-blocking)
-            try {
-                const [recon, qualityLog, codRemittances] = await Promise.all([
-                    sq('data_reconciliation', '?order=checked_at.desc&limit=200'),
-                    sq('data_quality_log', '?order=checked_at.desc&limit=200'),
-                    sq('cod_remittances', '?order=remittance_date.desc&limit=100')
-                ]);
-                DATA.reconciliation = recon;
-                DATA.qualityLog = qualityLog;
-                DATA.codRemittances = codRemittances;
-            } catch(e) { DATA.reconciliation = []; DATA.qualityLog = []; DATA.codRemittances = []; }
+            // Load reconciliation + quality + COD remittance data (non-blocking).
+            // No `limit=N` here — sq()'s `hasLimit` short-circuit + PostgREST 1000-row cap silently truncates
+            // any table that grows past the limit (data_quality_log was already at 224 of 200 limit).
+            // Independent try/catch per fetch so one failure doesn't wipe the other two arrays to [].
+            DATA.loadErrors = DATA.loadErrors || {};
+            const _ind = async (k, run) => { try { return await run(); } catch(e) { DATA.loadErrors[k] = String(e); console.warn('[loadAllData]', k, 'failed:', e); return []; } };
+            const [recon, qualityLog, codRemittances] = await Promise.all([
+                _ind('reconciliation', () => sq('data_reconciliation', '?order=checked_at.desc')),
+                _ind('qualityLog',     () => sq('data_quality_log',    '?order=checked_at.desc')),
+                _ind('codRemittances', () => sq('cod_remittances',     '?order=remittance_date.desc'))
+            ]);
+            DATA.reconciliation = recon;
+            DATA.qualityLog = qualityLog;
+            DATA.codRemittances = codRemittances;
 
             // Load unit economics RPC
             try {
