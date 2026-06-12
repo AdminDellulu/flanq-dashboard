@@ -7646,10 +7646,21 @@
     function renderSearch() {
         const input = document.getElementById('searchInput');
         if (!input) return;
-        _renderSearchSuggestions();
-        if (input.value) _runSearch(input.value);
-        else _renderSearchResults(null);
-        // Focus the input when the user lands on the tab.
+        const spotlight = document.querySelector('.search-spotlight');
+        // Sync UI state to the chat-state on every tab entry. Without this, switching tabs
+        // away mid-chat and back left the spotlight stuck in chat-mode (input docked bottom,
+        // suggestions hidden, thread gone) — looks broken.
+        if (_chatMessages.length > 0) {
+            if (spotlight) spotlight.classList.add('chat-mode');
+            input.placeholder = 'Ask a follow-up…';
+            _renderChatThreadInto(false);
+        } else {
+            if (spotlight) spotlight.classList.remove('chat-mode');
+            input.placeholder = 'Ask anything about Flanq — products, orders, customers, campaigns, insights…';
+            _renderSearchSuggestions();
+            if (input.value) _runSearch(input.value);
+            else _renderSearchResults(null);
+        }
         setTimeout(() => input.focus(), 30);
     }
 
