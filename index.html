@@ -1208,7 +1208,7 @@
                         <span id="productFilterChipLabel">All Products</span>
                         <span style="font-size:9px;color:var(--text-sec);">▾</span>
                     </div>
-                    <div id="productFilterDropdown" style="display:none;position:absolute;top:60px;right:24px;width:380px;max-height:520px;background:var(--bg-elev);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.18);z-index:1000;overflow:hidden;font-size:12px;">
+                    <div id="productFilterDropdown" style="display:none;position:absolute;top:60px;right:24px;width:380px;max-height:520px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.25);z-index:1000;overflow:hidden;font-size:12px;">
                         <div style="padding:10px 12px;border-bottom:1px solid var(--border);">
                             <input id="productFilterSearch" placeholder="Search products…" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit;font-size:12px;" />
                         </div>
@@ -7470,16 +7470,58 @@
             .map(p => ({ p, rev: revByProd.get(p.id) || 0, qty: qtyByProd.get(p.id) || 0 }))
             .sort((a, b) => (b.rev - a.rev) || a.p.name.localeCompare(b.p.name));
     }
+    // Group products by their brand-prefix token (first >=4-char alphanumeric token, lowercased,
+    // ™®© stripped). Fuzzy merge: a new product joins an existing group if its head token equals,
+    // is a substring of, or has Levenshtein distance <=2 vs the group's key.
+    // Rationale: SN's products table has near-duplicate rows for the same actual product
+    // ("Strapo™", "Strappo Straps", "Strapo Strap" — all one product). User-facing filter
+    // should treat them as one entry, store all underlying product_ids when selected.
+    function _groupProductsByBrand(scoredProducts) {
+        const groups = [];
+        for (const sp of scoredProducts) {
+            const head = extractAliasTokens(sp.p.name)[0];
+            if (!head) {
+                groups.push({ key: `__solo_${sp.p.id}`, label: sp.p.name, productIds: new Set([sp.p.id]), rev: sp.rev, qty: sp.qty, items: [sp] });
+                continue;
+            }
+            let target = null;
+            for (const g of groups) {
+                if (g.key.startsWith('__solo_')) continue;
+                if (g.key === head) { target = g; break; }
+                if (g.key.includes(head) || head.includes(g.key)) { target = g; break; }
+                if (levenshtein(g.key, head) <= 2) { target = g; break; }
+            }
+            if (target) {
+                target.productIds.add(sp.p.id);
+                target.rev += sp.rev;
+                target.qty += sp.qty;
+                target.items.push(sp);
+            } else {
+                groups.push({ key: head, label: head.charAt(0).toUpperCase() + head.slice(1), productIds: new Set([sp.p.id]), rev: sp.rev, qty: sp.qty, items: [sp] });
+            }
+        }
+        for (const g of groups) {
+            if (g.items.length === 1) { g.label = g.items[0].p.name; continue; }
+            g.skuCount = g.items.length;
+            // Brand label = capitalised head token, kept short — full SKU names are visible on hover.
+            g.label = g.key.charAt(0).toUpperCase() + g.key.slice(1);
+        }
+        return groups.sort((a, b) => (b.rev - a.rev) || a.label.localeCompare(b.label));
+    }
     function _renderProductFilterChipLabel() {
         const label = document.getElementById('productFilterChipLabel');
         if (!label) return;
         if (productFilter.mode === 'all') { label.textContent = 'All Products'; return; }
-        const names = (DATA.products || [])
-            .filter(p => productFilter.ids.has(Number(p.id)))
-            .map(p => p.name.replace(/[™®©]/g, '').trim().split(' ')[0]);
-        const head = names.slice(0, 2).join(', ');
-        const tail = names.length > 2 ? ` +${names.length - 2}` : '';
-        label.textContent = `${head}${tail}` || `${productFilter.ids.size} products`;
+        // Label by GROUP (brand), so the chip says "Strapo, GlowBar" instead of every SKU name.
+        const scored = (DATA.products || []).map(p => ({ p, rev: 0, qty: 0 }));
+        const groups = _groupProductsByBrand(scored);
+        const activeLabels = groups
+            .filter(g => [...g.productIds].some(id => productFilter.ids.has(Number(id))))
+            .map(g => g.label.split(' ')[0].replace(/[™®©]/g, ''));
+        if (!activeLabels.length) { label.textContent = `${productFilter.ids.size} products`; return; }
+        const head = activeLabels.slice(0, 2).join(', ');
+        const tail = activeLabels.length > 2 ? ` +${activeLabels.length - 2}` : '';
+        label.textContent = `${head}${tail}`;
     }
     function _renderActiveFilterBanner() {
         const banner = document.getElementById('productFilterBanner');
@@ -7504,23 +7546,37 @@
         const wrap = document.getElementById('productFilterList');
         const search = (document.getElementById('productFilterSearch')?.value || '').toLowerCase().trim();
         const fmt = (n) => '₹' + Math.round(n).toLocaleString('en-IN');
-        const rows = _productsSortedByRev30d()
-            .filter(({ p }) => !search || p.name.toLowerCase().includes(search))
-            .map(({ p, rev, qty }) => {
-                const checked = _draftFilterIds.has(Number(p.id)) ? 'checked' : '';
-                return `<label style="display:flex;align-items:center;gap:8px;padding:7px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:12px;">
-                    <input type="checkbox" data-pid="${p.id}" ${checked} style="margin:0;" />
-                    <span style="flex:1;">${p.name}</span>
-                    <span style="color:var(--text-sec);font-size:11px;white-space:nowrap;">${fmt(rev)} · ${qty}</span>
-                </label>`;
-            }).join('');
+        const groups = _groupProductsByBrand(_productsSortedByRev30d());
+        const visible = groups.filter(g => {
+            if (!search) return true;
+            if (g.label.toLowerCase().includes(search)) return true;
+            return g.items.some(it => it.p.name.toLowerCase().includes(search));
+        });
+        const rows = visible.map(g => {
+            const ids = [...g.productIds];
+            const someChecked = ids.some(id => _draftFilterIds.has(Number(id)));
+            const allChecked = ids.every(id => _draftFilterIds.has(Number(id)));
+            const checked = allChecked ? 'checked' : '';
+            const indeterminate = (someChecked && !allChecked);
+            const skuTag = g.skuCount > 1 ? `<span style="color:var(--text-sec);font-size:10px;margin-left:4px;">(${g.skuCount} SKUs)</span>` : '';
+            const skuTitle = g.items.length > 1 ? g.items.map(it => it.p.name).join('\n') : g.label;
+            return `<label title="${skuTitle.replace(/"/g, '&quot;')}" style="display:flex;align-items:center;gap:8px;padding:7px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:12px;">
+                <input type="checkbox" data-pids="${ids.join(',')}" ${checked} data-indeterminate="${indeterminate}" style="margin:0;" />
+                <span style="flex:1;">${g.label}${skuTag}</span>
+                <span style="color:var(--text-sec);font-size:11px;white-space:nowrap;">${fmt(g.rev)} · ${g.qty}</span>
+            </label>`;
+        }).join('');
         wrap.innerHTML = rows || `<div style="padding:24px 12px;text-align:center;color:var(--text-sec);font-size:11px;">No products match.</div>`;
-        document.getElementById('productFilterCount').textContent = `${_draftFilterIds.size} selected`;
+        // Apply indeterminate state for partially-selected brand groups (HTML attribute alone can't set this).
+        wrap.querySelectorAll('input[type=checkbox][data-indeterminate="true"]').forEach(cb => { cb.indeterminate = true; });
+        document.getElementById('productFilterCount').textContent = `${_draftFilterIds.size} SKU${_draftFilterIds.size === 1 ? '' : 's'} selected`;
         wrap.querySelectorAll('input[type=checkbox]').forEach(cb => {
             cb.addEventListener('change', (e) => {
-                const pid = Number(e.target.dataset.pid);
-                if (e.target.checked) _draftFilterIds.add(pid); else _draftFilterIds.delete(pid);
-                document.getElementById('productFilterCount').textContent = `${_draftFilterIds.size} selected`;
+                const pids = (e.target.dataset.pids || '').split(',').map(Number).filter(Number.isFinite);
+                if (e.target.checked) pids.forEach(id => _draftFilterIds.add(id));
+                else pids.forEach(id => _draftFilterIds.delete(id));
+                e.target.indeterminate = false;
+                document.getElementById('productFilterCount').textContent = `${_draftFilterIds.size} SKU${_draftFilterIds.size === 1 ? '' : 's'} selected`;
             });
         });
     }
