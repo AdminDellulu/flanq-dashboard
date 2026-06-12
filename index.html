@@ -2512,7 +2512,8 @@
                 totalRevenue: orderStats.reduce((a, o) => a + (parseFloat(o.total)||0), 0),
                 avgOrderValue: orderStats.length > 0 ? orderStats.reduce((a, o) => a + (parseFloat(o.total)||0), 0) / orderStats.length : 0,
                 codOrders: orderStats.filter(o => (o.payment_type||'').toLowerCase() === 'cod').length,
-                prepaidOrders: orderStats.filter(o => ['prepaid','online'].includes((o.payment_type||'').toLowerCase())).length
+                prepaidOrders: orderStats.filter(o => ['prepaid','online'].includes((o.payment_type||'').toLowerCase())).length,
+                raw: orderStats   // exposed for deriveDailyMetricsForFilter — order_date + payment_type lookups
             };
 
             // Load reconciliation + quality + COD remittance data (non-blocking).
@@ -2791,6 +2792,126 @@
             const pid = DATA.campaignToProduct ? DATA.campaignToProduct[s.campaign_id] : null;
             return pid != null && productFilter.ids.has(Number(pid));
         });
+    }
+
+    // Re-derive per-day KPIs from raw tables, filtered by productFilter.ids.
+    // GST is OMITTED from profit per the canonical formula locked 2026-06-12 (pass-through).
+    // The fast path (mode=all -> daily_metrics.net_profit) still subtracts GST until the
+    // upstream RPC is patched. Today's numbers may differ between mode=all and mode=subset
+    // by the GST amount — known + documented.
+    let _derivedCache = new Map();   // key: `${dur}::${filterHash}` -> derived rows
+    function _resetDerivedCache() { _derivedCache.clear(); }
+    function deriveDailyMetricsForFilter(dur) {
+        const fh = _filterHash();
+        const key = `${dur}::${fh}`;
+        if (_derivedCache.has(key)) return _derivedCache.get(key);
+        const w = (dur === 'all') ? null : _dateWindow(dur);
+        const dayKey = (iso) => (iso || '').slice(0, 10);
+
+        const orderById = new Map((DATA.orders?.raw || DATA.orderStats || []).map(o => [Number(o.id), o]));
+        const itemsInFilter = _filterItems(DATA.orderItems || []);
+        const daily = new Map();
+        const ensure = (d) => {
+            if (!daily.has(d)) daily.set(d, {
+                d, orders: 0, cod: 0, prepaid: 0,
+                rev: 0, cogs: 0, gst: 0, pkg: 0, ship: 0, gw: 0,
+                adSpend: 0, rtoCost: 0,
+                delivered: 0, rto: 0,
+                cashPrepaid: 0, cashCOD: 0,
+                _orderIds: new Set(),
+            });
+            return daily.get(d);
+        };
+
+        // Revenue / COGS / GST / packaging / order counts (anchor = orders.order_date).
+        for (const it of itemsInFilter) {
+            const ord = orderById.get(Number(it.order_id));
+            if (!ord) continue;
+            const d = dayKey(ord.order_date);
+            if (!d || (w && !_inWindow(d, w))) continue;
+            const row = ensure(d);
+            const qty = parseInt(it.quantity) || 1;
+            row.rev  += parseFloat(it.line_total) || 0;
+            row.cogs += (parseFloat(it.cogs)            || 0) * qty;
+            row.gst  += (parseFloat(it.gst_cost)        || 0) * qty;
+            row.pkg  += (parseFloat(it.packaging_cost)  || 0) * qty;
+            if (!row._orderIds.has(ord.id)) {
+                row._orderIds.add(ord.id);
+                row.orders++;
+                const pt = (ord.payment_type || '').toLowerCase();
+                if (pt === 'cod') row.cod++;
+                else if (pt === 'prepaid' || pt === 'online') row.prepaid++;
+            }
+        }
+
+        // Shipping cost + RTO cost (anchor = shipments.shipped_at), value-share allocated for multi-item orders.
+        const orderIds = _orderIdsInFilter();
+        for (const s of (DATA.shipments?.raw || [])) {
+            const oid = Number(s.order_id);
+            if (orderIds && !orderIds.has(oid)) continue;
+            const d = dayKey(s.shipped_at);
+            if (!d || (w && !_inWindow(d, w))) continue;
+            const share = _orderShareInFilter(oid);
+            const row = ensure(d);
+            row.ship    += (parseFloat(s.shipping_cost) || 0) * share;
+            row.rtoCost += (parseFloat(s.rto_cost)      || 0) * share;
+        }
+
+        // Delivered / RTO counts (anchor = delivered_at / rto_initiated_at).
+        for (const s of (DATA.shipments?.raw || [])) {
+            const oid = Number(s.order_id);
+            if (orderIds && !orderIds.has(oid)) continue;
+            if (s.status === 'delivered' && s.delivered_at) {
+                const d = dayKey(s.delivered_at);
+                if (!w || _inWindow(d, w)) ensure(d).delivered++;
+            }
+            if (_isRto(s) && s.rto_initiated_at) {
+                const d = dayKey(s.rto_initiated_at);
+                if (!w || _inWindow(d, w)) ensure(d).rto++;
+            }
+        }
+
+        // Ad spend (anchor = ad_spend.date).
+        for (const s of getFilteredAdSpend(dur)) {
+            const d = dayKey(s.date);
+            if (!d) continue;
+            ensure(d).adSpend += parseFloat(s.spend) || 0;
+        }
+
+        // Derived: profit / margin / aov / cac / rtoRate. GST omitted per locked formula.
+        const rows = [...daily.values()].sort((a,b) => a.d.localeCompare(b.d));
+        for (const r of rows) {
+            r.profit = r.rev - r.cogs - r.adSpend - r.ship - r.gw - r.pkg - r.rtoCost;
+            r.margin = r.rev > 0 ? (r.profit / r.rev * 100) : 0;
+            r.aov    = r.orders > 0 ? (r.rev / r.orders) : 0;
+            r.cac    = r.orders > 0 ? (r.adSpend / r.orders) : 0;
+            r.rtoRate = _canonicalRtoRate(r.delivered, r.rto);
+            delete r._orderIds;
+        }
+        _derivedCache.set(key, rows);
+        return rows;
+    }
+
+    // The fork. Every render call site goes through this.
+    function getFilteredDailyMetrics(dur) {
+        if (productFilter.mode === 'subset') {
+            return deriveDailyMetricsForFilter(dur);
+        }
+        // Fast path: existing cached daily_metrics, windowed.
+        const dm = DATA.dailyMetrics || [];
+        if (!dm.length) return [];
+        if (dur === 'all') return dm;
+        if (dur === 'today') return dm.filter(d => d.d === dm[dm.length-1].d);
+        if (dur === 'yesterday') return dm.length > 1 ? dm.filter(d => d.d === dm[dm.length-2].d) : [];
+        const last = new Date(dm[dm.length-1].d);
+        if (dur === '7d')  { const c = new Date(last); c.setDate(c.getDate()-7);  return dm.filter(d => new Date(d.d) >= c); }
+        if (dur === '30d') { const c = new Date(last); c.setDate(c.getDate()-30); return dm.filter(d => new Date(d.d) >= c); }
+        if (dur === 'custom') {
+            const s = document.getElementById('customStart')?.value;
+            const e = document.getElementById('customEnd')?.value;
+            return (s && e) ? dm.filter(d => d.d >= s && d.d <= e) : dm;
+        }
+        return dm;
     }
 
     function smartContext(current, previous, metric, unit='') {
