@@ -2346,7 +2346,7 @@
 
             // Product performance from order_items.
             // Single fetch with order_id included so we can reuse for negative-status mapping below.
-            const orderItems = await sq('order_items', '?select=order_id,product_id,product_name,quantity,line_total,cogs');
+            const orderItems = await sq('order_items', '?select=order_id,product_id,product_name,quantity,line_total,cogs,gst_cost,packaging_cost');
             // Build the voided/refunded ID set up-front so perfMap can EXCLUDE items whose parent order
             // is voided. One real Flanq order (id=10318) was voided but kept its order_items, including a
             // single ₹9.5Cr line that polluted Top SKU / Units Sold / Avg Margin / Concentration callout.
@@ -2392,6 +2392,8 @@
                 });
             }
             DATA.productNegatives = negMap;
+            // Expose raw order_items for the product filter (deriveDailyMetricsForFilter).
+            DATA.orderItems = orderItems;
 
             DATA.adSpend = adSpend;
             DATA.adCampaigns = adCampaigns;
@@ -2718,6 +2720,77 @@
         const settlements = (DATA.settlements   || []).filter(s => !w || _inWindow(s.settled_at, w));
         const payments    = (DATA.payments      || []).filter(p => !w || _inWindow(p.created_at, w));
         return { codRemits, settlements, payments };
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // PRODUCT-FILTER aware helpers (spec section 4)
+    //   _filterItems(items)            — keep only order_items whose product_id is in the filter
+    //   _orderIdsInFilter()            — Set of order_ids that contain >=1 filtered product (null on mode=all)
+    //   _orderShareInFilter(orderId)   — value-share of filtered items in an order, 0..1
+    //   getFilteredAdSpend(dur)        — ad_spend rows whose mapped product_id is in the filter
+    // ──────────────────────────────────────────────────────────────────────
+    function _filterItems(items) {
+        if (productFilter.mode === 'all') return items || [];
+        return (items || []).filter(it => productFilter.ids.has(Number(it.product_id)));
+    }
+    let _orderIdsCache = undefined;
+    let _orderShareCache = null;
+    let _orderShareCacheFilterHash = '';
+    function _filterHash() {
+        return productFilter.mode === 'all' ? 'ALL' : [...productFilter.ids].sort((a,b)=>a-b).join(',');
+    }
+    function _invalidateFilterCaches() {
+        _orderIdsCache = undefined;
+        _orderShareCache = null;
+        _orderShareCacheFilterHash = '';
+    }
+    function _orderIdsInFilter() {
+        const fh = _filterHash();
+        if (_orderShareCacheFilterHash === fh && _orderIdsCache !== undefined) return _orderIdsCache;
+        if (productFilter.mode === 'all') {
+            _orderIdsCache = null;  // null = "no filter, pass all through"
+            _orderShareCache = null;
+            _orderShareCacheFilterHash = fh;
+            return null;
+        }
+        const items = DATA.orderItems || [];
+        const ids = new Set();
+        const totalsByOrder = new Map();   // order_id -> total line_total
+        const matchedByOrder = new Map();  // order_id -> matched line_total
+        for (const it of items) {
+            const oid = Number(it.order_id);
+            const lt = parseFloat(it.line_total) || 0;
+            totalsByOrder.set(oid, (totalsByOrder.get(oid) || 0) + lt);
+            if (productFilter.ids.has(Number(it.product_id))) {
+                ids.add(oid);
+                matchedByOrder.set(oid, (matchedByOrder.get(oid) || 0) + lt);
+            }
+        }
+        const share = new Map();
+        for (const oid of ids) {
+            const t = totalsByOrder.get(oid) || 0;
+            share.set(oid, t > 0 ? (matchedByOrder.get(oid) / t) : 1);
+        }
+        _orderIdsCache = ids;
+        _orderShareCache = share;
+        _orderShareCacheFilterHash = fh;
+        return ids;
+    }
+    function _orderShareInFilter(orderId) {
+        _orderIdsInFilter();  // ensures cache is warm
+        if (productFilter.mode === 'all') return 1;
+        return _orderShareCache?.get(Number(orderId)) ?? 0;
+    }
+    // Returns ad_spend rows attributable to the filtered products, within the duration window.
+    function getFilteredAdSpend(dur) {
+        const all = DATA.ad_spend || DATA.adSpend || [];
+        const w = (dur === 'all') ? null : _dateWindow(dur);
+        return all.filter(s => {
+            if (w && !_inWindow(s.date, w)) return false;
+            if (productFilter.mode === 'all') return true;
+            const pid = DATA.campaignToProduct ? DATA.campaignToProduct[s.campaign_id] : null;
+            return pid != null && productFilter.ids.has(Number(pid));
+        });
     }
 
     function smartContext(current, previous, metric, unit='') {
