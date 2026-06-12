@@ -1203,6 +1203,25 @@
                         <span style="color:var(--text-sec);font-size:11px;">to</span>
                         <input type="date" id="customEnd" class="duration-select" style="padding:5px 6px;font-size:11px;" />
                     </div>
+                    <div id="productFilterChip" class="duration-select" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;user-select:none;" title="Filter by product">
+                        <span style="font-size:13px;">🎯</span>
+                        <span id="productFilterChipLabel">All Products</span>
+                        <span style="font-size:9px;color:var(--text-sec);">▾</span>
+                    </div>
+                    <div id="productFilterDropdown" style="display:none;position:absolute;top:60px;right:24px;width:380px;max-height:520px;background:var(--bg-elev);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.18);z-index:1000;overflow:hidden;font-size:12px;">
+                        <div style="padding:10px 12px;border-bottom:1px solid var(--border);">
+                            <input id="productFilterSearch" placeholder="Search products…" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit;font-size:12px;" />
+                        </div>
+                        <div style="padding:6px 12px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;font-size:11px;">
+                            <span><a id="productFilterSelectAll" style="color:var(--purple);cursor:pointer;">Select all</a> · <a id="productFilterClear" style="color:var(--purple);cursor:pointer;">Clear</a></span>
+                            <span id="productFilterCount" style="color:var(--text-sec);">0 selected</span>
+                        </div>
+                        <div id="productFilterList" style="max-height:380px;overflow-y:auto;"></div>
+                        <div style="padding:8px 12px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;">
+                            <button id="productFilterCancel" class="ctrl-btn" style="padding:5px 12px;font-size:11px;">Cancel</button>
+                            <button id="productFilterApply" class="ctrl-btn" style="padding:5px 12px;font-size:11px;background:var(--purple);color:#fff;border-color:var(--purple);">Apply</button>
+                        </div>
+                    </div>
                     <div class="controls">
                         <button class="ctrl-btn" id="refreshBtn" title="Refresh" style="display:inline-flex;align-items:center;justify-content:center;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36M20.49 15a9 9 0 0 1-14.85 3.36"/></svg></button>
                         <button class="ctrl-btn" id="darkModeBtn" title="Dark mode" style="display:inline-flex;align-items:center;justify-content:center;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
