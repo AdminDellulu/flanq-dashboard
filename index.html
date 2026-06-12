@@ -2135,10 +2135,44 @@
         return prev[b.length];
     }
 
-    // Build a campaign_id -> product_id|null map by matching campaign_name against product aliases.
-    // Strict substring first; Levenshtein <= 2 fuzzy fallback per-word.
-    // Ambiguous campaigns (name contains aliases of 2+ products): first match wins, warn to console.
-    // Output: { map: {[campaign_id]: product_id|null}, summary: {total, matched, unmatched, warnings} }
+    // Canonical brand-key extractor. Lifted from renderAds (was function-scoped) so attribution
+    // is computed the SAME way on both sides:
+    //   - Product side: _normalizeProductKey("Strapo™ | Adjustable Luggage Strap") -> "Strapo"
+    //   - Campaign side: _normalizeProductKey("⇪ STRAPO | CBO Scaler ▶︎ 8 June 26") -> "Strapo"
+    // The previous attribution attempted to join via ad_spend.campaign_id but that column
+    // holds Meta's 18-digit string ID while ad_campaigns.id is a small serial int — the keys
+    // never matched, so 100% of ad spend looked unattributable to the product filter.
+    const _CANON_BRAND = {
+        'glowbar':'GlowBar','hielo':'Hielo','arx6':'ARX6','stellarion':'Stellarion',
+        'strapo':'Strapo','halo':'Halo','brik':'Brik','torque':'Torque','tula':'Tula',
+        'parke':'Parke','monaloo':'MonaLoo','pixelion':'Pixelion','dock+':'Dock+','dock':'Dock+',
+        'batx':'BATX','glace':'GLACE','furex':'Furex','sonare':'Sonare','aptc':'APTC'
+    };
+    function _normalizeProductKey(raw) {
+        if (!raw) return 'Other';
+        let s = String(raw).split('|')[0].split('▶')[0].trim();
+        s = s.replace(/^[^A-Za-z0-9]+/, '').replace(/[^A-Za-z0-9 +\-]+$/, '').trim();
+        if (!s) return 'Other';
+        const lc = s.toLowerCase();
+        return _CANON_BRAND[lc] || s;
+    }
+
+    // Build {productId -> brandKey} + {brandKey -> Set<productId>} at load time.
+    // Used by the product filter to scope ad spend (which has no direct product_id column).
+    function buildProductBrandKeys(products) {
+        const productBrandKey = {};
+        const brandKeyToProducts = {};
+        for (const p of (products || [])) {
+            const key = _normalizeProductKey(p.name);
+            productBrandKey[p.id] = key;
+            if (!brandKeyToProducts[key]) brandKeyToProducts[key] = new Set();
+            brandKeyToProducts[key].add(p.id);
+        }
+        return { productBrandKey, brandKeyToProducts };
+    }
+
+    // [DEPRECATED] kept only so existing references don't crash if something still calls it.
+    // Use buildProductBrandKeys + _normalizeProductKey on campaign_name instead.
     function buildCampaignProductMap(campaigns, products) {
         if (!campaigns || !products) return { map: {}, summary: { total: 0, matched: 0, unmatched: 0, warnings: [] } };
         const aliases = products.map(p => ({ id: p.id, name: p.name, keys: extractAliasTokens(p.name) }));
@@ -2238,11 +2272,12 @@
 
             DATA.products = products;
             DATA.research = research;
-            // Campaign -> product attribution map (built once after products + campaigns are loaded).
-            // Used by ad-spend filter when productFilter.mode === 'subset'. See spec section 4c.
-            const _attr = buildCampaignProductMap(adCampaigns, products);
-            DATA.campaignToProduct = _attr.map;
-            DATA.campaignAttributionSummary = _attr.summary;
+            // Attribution: product -> brand_key via _normalizeProductKey; ad_spend.campaign_name
+            // gets the same treatment at filter time. No reliance on the campaign_id join
+            // (ad_spend.campaign_id is Meta's string ID, ad_campaigns.id is internal serial — mismatched).
+            const _brand = buildProductBrandKeys(products);
+            DATA.productBrandKey = _brand.productBrandKey;       // {productId: brandKey}
+            DATA.brandKeyToProducts = _brand.brandKeyToProducts; // {brandKey: Set<productId>}
             const _attrSpend30d = (adSpend || [])
                 .filter(s => {
                     const d = new Date(s.date);
@@ -2250,13 +2285,19 @@
                     return d >= cutoff;
                 })
                 .reduce((acc, s) => {
-                    const pid = DATA.campaignToProduct[s.campaign_id];
                     const v = parseFloat(s.spend) || 0;
-                    if (pid) acc.attributed += v; else acc.unattributed += v;
+                    const key = _normalizeProductKey(s.campaign_name);
+                    if (DATA.brandKeyToProducts[key]) { acc.attributed += v; acc.brands.add(key); }
+                    else { acc.unattributed += v; acc.unknownBrands.add(key); }
                     return acc;
-                }, { attributed: 0, unattributed: 0 });
-            DATA.campaignAttributionSummary.spend30d = _attrSpend30d;
-            console.log(`[ATTR] ${_attr.summary.matched}/${_attr.summary.total} campaigns mapped · ₹${Math.round(_attrSpend30d.attributed).toLocaleString('en-IN')} attributable / ₹${Math.round(_attrSpend30d.unattributed).toLocaleString('en-IN')} unattributable (30d)`);
+                }, { attributed: 0, unattributed: 0, brands: new Set(), unknownBrands: new Set() });
+            DATA.campaignAttributionSummary = {
+                productBrands: Object.keys(_brand.brandKeyToProducts).length,
+                attributedBrands30d: [..._attrSpend30d.brands].sort(),
+                unattributedBrands30d: [..._attrSpend30d.unknownBrands].sort(),
+                spend30d: { attributed: _attrSpend30d.attributed, unattributed: _attrSpend30d.unattributed },
+            };
+            console.log(`[ATTR] ${Object.keys(_brand.brandKeyToProducts).length} product brand keys · ₹${Math.round(_attrSpend30d.attributed).toLocaleString('en-IN')} attributable / ₹${Math.round(_attrSpend30d.unattributed).toLocaleString('en-IN')} unattributable (30d). Unattributed brand keys:`, [..._attrSpend30d.unknownBrands].sort());
 
             // LIVE TODAY: Fetch real-time "today" data from go_fetch RPC and inject/replace in dailyMetrics
             // Skip the live RPC merge when a product subset is active — the RPC has no product axis.
@@ -2824,14 +2865,22 @@
         return _orderShareCache?.get(Number(orderId)) ?? 0;
     }
     // Returns ad_spend rows attributable to the filtered products, within the duration window.
+    // Attribution: brand_key(campaign_name) intersects with the brand keys of products in filter.
     function getFilteredAdSpend(dur) {
         const all = DATA.ad_spend || DATA.adSpend || [];
         const w = (dur === 'all') ? null : _dateWindow(dur);
+        if (productFilter.mode === 'all') {
+            return w ? all.filter(s => _inWindow(s.date, w)) : all;
+        }
+        const allowedBrandKeys = new Set();
+        for (const pid of productFilter.ids) {
+            const key = DATA.productBrandKey?.[pid];
+            if (key) allowedBrandKeys.add(key);
+        }
         return all.filter(s => {
             if (w && !_inWindow(s.date, w)) return false;
-            if (productFilter.mode === 'all') return true;
-            const pid = DATA.campaignToProduct ? DATA.campaignToProduct[s.campaign_id] : null;
-            return pid != null && productFilter.ids.has(Number(pid));
+            const brand = _normalizeProductKey(s.campaign_name);
+            return allowedBrandKeys.has(brand);
         });
     }
 
@@ -3525,7 +3574,8 @@
 
     function renderNdrSummaryCard() {
         const el = document.getElementById('ndrSummaryCard'); if (!el) return;
-        const shipRaw = DATA.shipments.raw || [];
+        // Respect product filter (and ignore duration — NDR summary is an all-time KPI).
+        const shipRaw = getFilteredShipments('all');
         // NDR: rows with ndr_count>0 OR explicit reason text (Flanq has 223 ndr_count>0 vs 6 with reason).
         const ndrShipments = shipRaw.filter(s => (s.ndr_count||0) > 0 || (typeof s.ndr_reason === 'string' && s.ndr_reason.trim() !== ''));
         const ndrCount = ndrShipments.length;
@@ -4062,25 +4112,9 @@
         const groupBy = window._adsGroupBy || 'product';
 
         // ===== AGGREGATE CAMPAIGNS INTO PRODUCTS =====
-        // Flanq campaign prefixes use Unicode decorators (⌆, ⇪, ▶, etc.) and inconsistent casing.
-        // Strip leading non-letter chars + symbol suffixes and case-fold to a canonical product key
-        // so e.g. "⌆ Glowbar | CBO | 21 Mar" / "⇪ Glowbar" / "GlowBar" all collapse to one product.
-        // Returns the cleaned title-cased name for display.
-        const _normalizeProductKey = (raw) => {
-            if (!raw) return 'Other';
-            // Take part before '|' and before '▶' (sub-strategy markers), then strip leading non-letters.
-            let s = String(raw).split('|')[0].split('▶')[0].trim();
-            s = s.replace(/^[^A-Za-z0-9]+/, '').replace(/[^A-Za-z0-9 +\-]+$/, '').trim();
-            if (!s) return 'Other';
-            // Canonicalize known Flanq products by lowercase match
-            const _canon = { 'glowbar':'GlowBar','hielo':'Hielo','arx6':'ARX6','stellarion':'Stellarion',
-                'strapo':'Strapo','halo':'Halo','brik':'Brik','torque':'Torque','tula':'Tula',
-                'parke':'Parke','monaloo':'MonaLoo','pixelion':'Pixelion','dock+':'Dock+','dock':'Dock+',
-                'batx':'BATX','glace':'GLACE','furex':'Furex','sonare':'Sonare','aptc':'APTC' };
-            const lc = s.toLowerCase();
-            return _canon[lc] || s;
-        };
-        // Backwards-compatible alias retained for any read-only callers.
+        // _normalizeProductKey is now defined at module scope (search top of script for _CANON_BRAND)
+        // so the product filter and AdPulse aggregation share one definition. productNorm preserved
+        // for any callers that may rely on the proxy semantics.
         const productNorm = new Proxy({}, { get: (_, k) => _normalizeProductKey(k) });
         const prodAgg = {};
         displayCampaigns.forEach(c => {
@@ -5433,26 +5467,11 @@
     // ==================== RENDER: SHIPPING ====================
     function renderShipping() {
         const dur = document.getElementById('durationSelect').value;
-        const allRaw = DATA.shipments.raw || [];
-
-        // ====== FILTER RAW SHIPMENTS BY DURATION ======
-        let filteredRaw = allRaw;
-        if (dur !== 'all' && allRaw.length) {
-            // Use the same date logic as daily_metrics duration filter
-            const allDates = allRaw.filter(s => s.shipped_at).map(s => new Date(s.shipped_at));
-            const maxDate = allDates.length ? new Date(Math.max(...allDates)) : new Date();
-            let cutoff;
-            if (dur === 'today') { cutoff = new Date(maxDate); cutoff.setHours(0,0,0,0); }
-            else if (dur === 'yesterday') { cutoff = new Date(maxDate); cutoff.setDate(cutoff.getDate()-1); cutoff.setHours(0,0,0,0); }
-            else if (dur === '7d') { cutoff = new Date(maxDate); cutoff.setDate(cutoff.getDate()-7); }
-            else if (dur === '30d') { cutoff = new Date(maxDate); cutoff.setDate(cutoff.getDate()-30); }
-            if (cutoff) {
-                filteredRaw = allRaw.filter(s => {
-                    if (!s.shipped_at) return false; // exclude shipments without date in filtered views
-                    return new Date(s.shipped_at) >= cutoff;
-                });
-            }
-        }
+        // getFilteredShipments handles both duration windowing (by anchor column, default shipped_at)
+        // AND product filtering via _orderIdsInFilter. allRaw kept for the few places that need
+        // the unfiltered universe (e.g. aggregator scorecard "all-time" mode if any).
+        const allRaw = getFilteredShipments('all');
+        const filteredRaw = getFilteredShipments(dur);
 
         // ====== RECOMPUTE ALL AGGREGATES FROM FILTERED DATA ======
         function newBkt(name) { return { name, total: 0, delivered: 0, rto: 0, fulfilled: 0, pending: 0, cancelled: 0, inTransit: 0, outForDelivery: 0, cost: 0, rtoCost: 0, codTotal: 0, codRemitted: 0, codLocked: 0, ndrTotal: 0, prepaid: 0, cod: 0 }; }
@@ -6765,7 +6784,8 @@
     }
 
     function renderShippingSettlements() {
-        const shipRaw = DATA.shipments.raw || [];
+        // All-time, product-filtered. COD settlement is not a duration KPI on this card.
+        const shipRaw = getFilteredShipments('all');
         const codRem = DATA.codRemittances || [];
 
         // COD delivered by aggregator (pending settlement)
@@ -7242,21 +7262,10 @@
 
     function validateShippingRender() {
         const dur = document.getElementById('durationSelect').value;
-        const allRaw = DATA.shipments.raw || [];
         const checks = [];
-
-        // Path B: independently filter and compute
-        let filtered = allRaw;
-        if (dur !== 'all' && allRaw.length) {
-            const allDates = allRaw.filter(s => s.shipped_at).map(s => new Date(s.shipped_at));
-            const maxDate = allDates.length ? new Date(Math.max(...allDates)) : new Date();
-            let cutoff;
-            if (dur === 'today') { cutoff = new Date(maxDate); cutoff.setHours(0,0,0,0); }
-            else if (dur === 'yesterday') { cutoff = new Date(maxDate); cutoff.setDate(cutoff.getDate()-1); cutoff.setHours(0,0,0,0); }
-            else if (dur === '7d') { cutoff = new Date(maxDate); cutoff.setDate(cutoff.getDate()-7); }
-            else if (dur === '30d') { cutoff = new Date(maxDate); cutoff.setDate(cutoff.getDate()-30); }
-            if (cutoff) filtered = allRaw.filter(s => s.shipped_at && new Date(s.shipped_at) >= cutoff);
-        }
+        // Path B uses the same helper Path A uses now. The validation still catches divergence
+        // between rendered DOM values and the helper's output (covers KPI-card-formatting bugs).
+        const filtered = getFilteredShipments(dur);
         const b_total = filtered.length;
         const b_delivered = filtered.filter(s => s.status === 'delivered').length;
         const b_rto = filtered.filter(s => s.status === 'rto' || s.is_rto).length;
@@ -7533,8 +7542,8 @@
             .filter(s => {
                 const w = (dur === 'all') ? null : _dateWindow(dur);
                 if (w && !_inWindow(s.date, w)) return false;
-                const pid = DATA.campaignToProduct ? DATA.campaignToProduct[s.campaign_id] : null;
-                return pid == null;
+                const brand = _normalizeProductKey(s.campaign_name);
+                return !DATA.brandKeyToProducts || !DATA.brandKeyToProducts[brand];
             })
             .reduce((a, s) => a + (parseFloat(s.spend) || 0), 0);
         const ru = '₹' + Math.round(unattr).toLocaleString('en-IN');
