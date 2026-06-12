@@ -2172,7 +2172,9 @@
                         merged.margin  = merged.rev > 0 ? (merged.profit / merged.rev * 100) : 0;
                         merged.aov     = merged.orders > 0 ? (merged.rev / merged.orders) : 0;
                         merged.cac     = merged.orders > 0 ? (merged.adSpend / merged.orders) : 0;
-                        merged.rtoRate = merged.orders > 0 ? (merged.rto / merged.orders * 100) : 0;
+                        // Canonical RTO Rate = RTO / (Delivered + RTO). KPI_AUDIT.md §3a.
+                        merged.rtoRate = ((merged.delivered||0) + (merged.rto||0)) > 0
+                          ? ((merged.rto||0) / ((merged.delivered||0) + (merged.rto||0)) * 100) : 0;
                         if (todayIdx >= 0) DATA.dailyMetrics[todayIdx] = merged;
                         else { DATA.dailyMetrics.push(merged); DATA.dailyMetrics.sort((a, b) => a.d.localeCompare(b.d)); }
                         console.log('[LIVE] Today merged:', merged.orders, 'orders,', merged.rev, 'rev,', merged.adSpend, 'adSpend,', merged.profit, 'profit');
@@ -2371,8 +2373,11 @@
                 }
             });
             function enrichBucket(c) {
-                c.deliveryRate = c.total > 0 ? (c.delivered / c.total * 100) : 0;
-                c.rtoRate = c.total > 0 ? (c.rto / c.total * 100) : 0;
+                // Canonical: rate over RESOLVED shipments (delivered+rto), excludes in-transit/pending.
+                // KPI_AUDIT.md §3a — same denominator everywhere.
+                const resolved = (c.delivered||0) + (c.rto||0);
+                c.deliveryRate = resolved > 0 ? (c.delivered / resolved * 100) : 0;
+                c.rtoRate      = resolved > 0 ? (c.rto       / resolved * 100) : 0;
                 c.avgCost = c.total > 0 ? c.cost / c.total : 0;
                 return c;
             }
@@ -2390,12 +2395,14 @@
 
             DATA.settlements = settlements;
             DATA.payments = payments;
+            // payment_type is normalized to lowercase in DB (CHECK constraint enforces).
+            // Case-insensitive match defends against any future manual writes that bypass the constraint.
             DATA.orders = {
                 total: orderStats.length,
                 totalRevenue: orderStats.reduce((a, o) => a + (parseFloat(o.total)||0), 0),
                 avgOrderValue: orderStats.length > 0 ? orderStats.reduce((a, o) => a + (parseFloat(o.total)||0), 0) / orderStats.length : 0,
-                codOrders: orderStats.filter(o => o.payment_type === 'COD').length,
-                prepaidOrders: orderStats.filter(o => o.payment_type === 'Prepaid').length
+                codOrders: orderStats.filter(o => (o.payment_type||'').toLowerCase() === 'cod').length,
+                prepaidOrders: orderStats.filter(o => ['prepaid','online'].includes((o.payment_type||'').toLowerCase())).length
             };
 
             // Load reconciliation + quality + COD remittance data (non-blocking).
@@ -2531,7 +2538,8 @@
                 profit: sum(rows,'profit'),
                 cac: sum(rows,'orders') > 0 ? (sum(rows,'adSpend') / sum(rows,'orders')) : 0,
                 delivered: sum(rows,'delivered'), rto: sum(rows,'rto'),
-                rtoRate: sum(rows,'orders') > 0 ? (sum(rows,'rto') / sum(rows,'orders') * 100) : 0,
+                // Canonical RTO Rate = RTO / (Delivered + RTO) — see KPI_AUDIT.md §3a
+                rtoRate: _canonicalRtoRate(sum(rows,'delivered'), sum(rows,'rto')),
                 cashPrepaid: sum(rows,'cashPrepaid'), cashCOD: sum(rows,'cashCOD'),
                 _days: rows.length
             };
@@ -2541,6 +2549,67 @@
     function getChartLabel(d, dur) {
         if (isHourlyMode(dur)) return d.d; // Already "HH:00" from hourly data
         return fmtDate(d.d);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // KPI helpers (KPI_AUDIT.md §3, §6)
+    //
+    // _isRto(s)             : canonical RTO predicate (covers status+is_rto edge cases)
+    // _canonicalRtoRate(d,r): industry-standard RTO Rate = RTO / (Delivered + RTO)
+    // _dateWindow(dur)      : returns {start, end} dates for the duration selector
+    // getFilteredShipments  : SHIPMENT universe — filter shipments by event date
+    // getFilteredCashEvents : CASH universe     — filter COD remits / settlements / payments
+    //
+    // Use these instead of hand-rolled filters so every KPI tells the truth for its date.
+    // ──────────────────────────────────────────────────────────────────────
+    function _isRto(s) {
+        if (!s) return false;
+        return s.is_rto === true || ['rto','rto_in_transit','rto_delivered'].includes(s.status);
+    }
+    function _canonicalRtoRate(deliveredCount, rtoCount) {
+        const denom = (deliveredCount||0) + (rtoCount||0);
+        return denom > 0 ? ((rtoCount||0) / denom * 100) : 0;
+    }
+    function _dateWindow(dur) {
+        const dm = DATA.dailyMetrics;
+        if (!dm.length) return null;
+        const last = new Date(dm[dm.length-1].d);
+        const dayBefore = (n) => { const c = new Date(last); c.setDate(c.getDate() - n); return c; };
+        if (dur === 'today')     return { start: new Date(last.getTime()), end: new Date(last.getTime()) };
+        if (dur === 'yesterday') return { start: dayBefore(1), end: dayBefore(1) };
+        if (dur === '7d')        return { start: dayBefore(7), end: last };
+        if (dur === '30d')       return { start: dayBefore(30), end: last };
+        if (dur === 'custom') {
+            const s = document.getElementById('customStart')?.value;
+            const e = document.getElementById('customEnd')?.value;
+            return (s && e) ? { start: new Date(s), end: new Date(e) } : null;
+        }
+        return null; // 'all' = no filter
+    }
+    function _inWindow(dateLike, w) {
+        if (!w || !dateLike) return false;
+        const d = new Date(dateLike);
+        const start = new Date(w.start); start.setHours(0,0,0,0);
+        const end   = new Date(w.end);   end.setHours(23,59,59,999);
+        return d >= start && d <= end;
+    }
+    // SHIPMENT universe: filter shipments table rows by their relevant event timestamp.
+    // anchorCol picks which date column drives the filter — defaults to shipped_at.
+    // Pass 'delivered_at' for delivery KPIs, 'rto_initiated_at' for RTO KPIs, etc.
+    function getFilteredShipments(dur, anchorCol = 'shipped_at') {
+        const all = (DATA.shipments && DATA.shipments.raw) || [];
+        if (dur === 'all') return all;
+        const w = _dateWindow(dur);
+        if (!w) return all;
+        return all.filter(s => _inWindow(s[anchorCol], w));
+    }
+    // CASH universe: filter COD remittances / Razorpay settlements / payments by their settle date.
+    function getFilteredCashEvents(dur) {
+        const w = (dur === 'all') ? null : _dateWindow(dur);
+        const codRemits   = (DATA.codRemittances || []).filter(r => !w || _inWindow(r.remittance_date, w));
+        const settlements = (DATA.settlements   || []).filter(s => !w || _inWindow(s.settled_at, w));
+        const payments    = (DATA.payments      || []).filter(p => !w || _inWindow(p.created_at, w));
+        return { codRemits, settlements, payments };
     }
 
     function smartContext(current, previous, metric, unit='') {
@@ -2641,7 +2710,8 @@
         const totalProfit = sum(data,'profit'), totalAdSpend = sum(data,'adSpend');
         const aov = totalOrders > 0 ? totalRev/totalOrders : 0;
         const roas = totalAdSpend > 0 ? totalRev/totalAdSpend : 0;
-        const rtoRate = totalOrders > 0 ? (sum(data,'rto')/totalOrders)*100 : 0;
+        // Canonical RTO Rate = RTO / (Delivered + RTO). See KPI_AUDIT.md §3a.
+        const rtoRate = _canonicalRtoRate(sum(data,'delivered'), sum(data,'rto'));
         const prepaidPct = totalOrders > 0 ? (totalPrepaid/totalOrders)*100 : 0;
         const margin = totalRev > 0 ? (totalProfit/totalRev)*100 : 0;
         // Weighted CAC = total spend / total orders (was unweighted day-mean of d.cac which over-weighted low-volume days).
@@ -2759,22 +2829,29 @@
         const killCount = campList.filter(c => c.roas < 1.5 && c.spend > 0).length;
         const topCamp = campList.sort((a,b) => b.roas - a.roas)[0];
 
-        // Shipping Health
-        const shipData = DATA.shipments || {};
-        const shipRaw = shipData.raw || [];
-        const totalShipped = shipData.total || 0;
-        const deliveredShips = shipRaw.filter(s => s.status === 'delivered');
-        const deliveredCount = deliveredShips.length;
-        const rtoCount = shipData.rtoCount || 0;
-        // NDR: prefer ndr_count > 0 over text presence — see comment at line ~5000.
-        const ndrShips = shipRaw.filter(s => (s.ndr_count||0) > 0 || (typeof s.ndr_reason === 'string' && s.ndr_reason.trim() !== ''));
+        // Shipping Health (KPI_AUDIT.md §5 fix #4) — now respects the duration selector via SHIPMENT universe.
+        // Anchor on shipped_at: "what shipping activity happened in this window".
+        // For deliveryRate/rtoRate we re-anchor on delivered_at and rto_initiated_at respectively
+        // because a shipment that shipped today won't be delivered today — using shipped_at would
+        // always show 0 deliveries on short windows. SN: ITL+Velocity combined, both aggregators present.
+        const _shippedInWin = getFilteredShipments(dur, 'shipped_at');
+        const _deliveredInWin = getFilteredShipments(dur, 'delivered_at').filter(s => s.status === 'delivered');
+        const _rtoInWin = getFilteredShipments(dur, 'rto_initiated_at').filter(_isRto);
+        const totalShipped = _shippedInWin.length;
+        const deliveredCount = _deliveredInWin.length;
+        const rtoCount = _rtoInWin.length;
+        // NDR: anchor on last_tracking_update (NDR happens during transit). Prefer ndr_count > 0 over text presence.
+        const _ndrUniverse = getFilteredShipments(dur, 'last_tracking_update');
+        const ndrShips = _ndrUniverse.filter(s => (s.ndr_count||0) > 0 || (typeof s.ndr_reason === 'string' && s.ndr_reason.trim() !== ''));
         const ndrCount = ndrShips.length;
-        const deliveryRate = totalShipped > 0 ? (deliveredCount / totalShipped * 100) : 0;
-        const rtoRateShip = totalShipped > 0 ? (rtoCount / totalShipped * 100) : 0;
-        // Compute avg delivery time from delivered shipments
+        // Canonical RTO Rate over delivered+rto in this window.
+        const rtoRateShip = _canonicalRtoRate(deliveredCount, rtoCount);
+        // Delivery rate = delivered / (delivered + rto) — same denominator semantics as RTO rate.
+        const deliveryRate = (deliveredCount + rtoCount) > 0 ? (deliveredCount / (deliveredCount + rtoCount) * 100) : 0;
+        // Avg delivery time over delivered-in-window shipments.
         let avgDeliveryTime = 0;
-        if (deliveredShips.length > 0) {
-            const delTimes = deliveredShips.filter(s => s.shipped_at && s.delivered_at).map(s => {
+        if (_deliveredInWin.length > 0) {
+            const delTimes = _deliveredInWin.filter(s => s.shipped_at && s.delivered_at).map(s => {
                 const d1 = new Date(s.shipped_at), d2 = new Date(s.delivered_at);
                 return (d2 - d1) / (1000 * 60 * 60 * 24);
             }).filter(d => d > 0 && d < 60);
@@ -2846,10 +2923,21 @@
             </tbody>
         </table>`;
 
-        // Cash Flow Reality (cash position widget)
-        const cashPrepaid = sum(data,'cashPrepaid') || (totalPrepaid > 0 ? totalRev * (totalPrepaid/(totalCOD+totalPrepaid+0.01)) : 0);
-        const cashCOD = sum(data,'cashCOD');
-        const codRevenue = totalCOD > 0 ? totalRev * (totalCOD/(totalCOD+totalPrepaid+0.01)) : 0;
+        // Cash Flow Reality (KPI_AUDIT.md §5 fix #5) — CASH universe
+        // Prepaid cash: from daily_metrics.cash_collected_prepaid (already correct, anchored to order_date
+        //   because Razorpay captures at order time for prepaid).
+        // COD cash IN: from cod_remittances rows with remittance_date in window — NOT from order_date proportions.
+        // COD pending: COD orders' total within window minus COD cash collected so far against any of those orders.
+        const _cash = getFilteredCashEvents(dur);
+        const cashPrepaid = sum(data,'cashPrepaid'); // already order-date-anchored, fine
+        const cashCOD = _cash.codRemits.reduce((a, r) => a + (parseFloat(r.cod_remitted)||0), 0);
+        // gross_revenue_cod / gross_revenue_prepaid are now real columns in daily_metrics (RPC fix #8).
+        // Sum over the window's daily rows for the period's COD revenue universe.
+        const codRevenueWindow = data.reduce((a, d) => a + (parseFloat(d.gross_revenue_cod)||0), 0);
+        // codRevenueWindow is what we BILLED in COD in this window; cashCOD is what SETTLED in this window.
+        // Pending = orders billed but not yet collected. (Cohort & cash buckets differ in timing — not a perfect match,
+        // but better than the old proportion math. Truer "pending" requires order-cohort joining which is fix-tier #9 work.)
+        const codRevenue = codRevenueWindow > 0 ? codRevenueWindow : (sum(data,'cod') > 0 ? totalRev * (sum(data,'cod')/(sum(data,'cod')+sum(data,'prepaid')+0.01)) : 0);
         const codPending = Math.max(0, codRevenue - cashCOD);
         const totalCashIn = cashPrepaid + cashCOD;
         const totalCashOut = totalCOGS + totalAdSpend + totalShip + totalPkg;
@@ -2961,7 +3049,9 @@
     function renderOverviewRtoTrend(data, dur) {
         dc('overviewRtoTrend'); const cd = chartDefaults();
         const ctx = document.getElementById('overviewRtoTrendChart'); if (!ctx) return;
-        const rtoData = data.map(d => d.rtoRate > 0 ? d.rtoRate : (d.rto > 0 && d.orders > 0 ? (d.rto / d.orders * 100) : null));
+        // Use stored rtoRate (already canonical from compute_daily_metrics_ist) when present;
+        // fallback computes RTO/(Delivered+RTO), not RTO/orders. KPI_AUDIT.md §3a.
+        const rtoData = data.map(d => d.rtoRate > 0 ? d.rtoRate : _canonicalRtoRate(d.delivered, d.rto));
         const targetLine = data.map(() => 5);
         charts['overviewRtoTrend'] = new Chart(ctx, {
             type: 'line',
@@ -5130,7 +5220,15 @@
                 weeklyShipMap[wk].count++; weeklyShipMap[wk].cost += cost;
             }
         });
-        function enrichBkt(c) { c.deliveryRate = c.total > 0 ? (c.delivered/c.total*100) : 0; c.rtoRate = c.total > 0 ? (c.rto/c.total*100) : 0; c.avgCost = c.total > 0 ? c.cost/c.total : 0; return c; }
+        function enrichBkt(c) {
+            // Canonical RTO/Delivery Rate — denominator is RESOLVED shipments only (delivered + rto).
+            // Matches KPI_AUDIT.md §3a + the enrichBucket sibling at line ~2375.
+            const resolved = (c.delivered||0) + (c.rto||0);
+            c.deliveryRate = resolved > 0 ? (c.delivered / resolved * 100) : 0;
+            c.rtoRate      = resolved > 0 ? (c.rto       / resolved * 100) : 0;
+            c.avgCost = c.total > 0 ? c.cost/c.total : 0;
+            return c;
+        }
         const carriers = Object.values(carrierMap).map(enrichBkt).sort((a,b) => b.total - a.total);
         const aggregators = Object.values(aggregatorMap).map(enrichBkt).sort((a,b) => b.total - a.total);
         const statuses = Object.values(statusMap).sort((a, b) => b.count - a.count);
@@ -5147,8 +5245,10 @@
         // "In Pipeline" = anything still moving — fulfilled is the warehouse-handed-off state, plus
         // in_transit + out_for_delivery + pending. Previously only summed fulfilled+pending → undercounted by 284.
         const activeShipments = fulfilledCount + pendingCount + inTransitCount + outForDeliveryCount;
-        const rtoRate = totalFiltered > 0 ? (rtoShipCount / totalFiltered * 100) : 0;
-        const deliveryRate = totalFiltered > 0 ? (deliveredCount / totalFiltered * 100) : 0;
+        // Canonical RTO/Delivery Rate — denominator is RESOLVED shipments. KPI_AUDIT.md §3a.
+        const _resolved = (deliveredCount||0) + (rtoShipCount||0);
+        const rtoRate      = _resolved > 0 ? (rtoShipCount  / _resolved * 100) : 0;
+        const deliveryRate = _resolved > 0 ? (deliveredCount / _resolved * 100) : 0;
         const avgCost = totalFiltered > 0 ? totalShipCost / totalFiltered : 0;
         const durLabels = { today:'Today', yesterday:'Yesterday', '7d':'Last 7 Days', '30d':'Last 30 Days', all:'All Time', custom: (() => { const s=document.getElementById('customStart'); const e=document.getElementById('customEnd'); return (s&&s.value&&e&&e.value) ? `${s.value} to ${e.value}` : 'Custom Range'; })() };
         const periodLabel = durLabels[dur] || 'Selected Period';
