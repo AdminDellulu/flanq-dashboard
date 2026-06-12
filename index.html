@@ -340,6 +340,22 @@
             0%, 80%, 100% { opacity: .25; transform: scale(.8); }
             40%           { opacity: 1;   transform: scale(1); }
         }
+
+        /* When chat is active: input docks at the bottom of the viewport, thread fills above. */
+        .search-spotlight.chat-mode {
+            display: flex; flex-direction: column;
+            min-height: calc(100vh - 220px); position: relative;
+        }
+        .search-spotlight.chat-mode .search-suggestions { display: none !important; }
+        .search-spotlight.chat-mode .search-results {
+            order: 1; flex: 1; padding-bottom: 12px;
+        }
+        .search-spotlight.chat-mode .search-spotlight-header {
+            order: 2; position: sticky; bottom: 12px; z-index: 5;
+            background: var(--bg); padding: 14px 0 4px;
+            border-top: 1px solid var(--border); margin-top: 12px;
+        }
+        body.dark-mode .search-spotlight.chat-mode .search-spotlight-header { background: var(--bg); }
         @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
 
         /* ===== KPI CARDS — 3-layer design with tinted backgrounds (Edit 1) ===== */
@@ -8315,19 +8331,76 @@
         const cutoff30 = new Date(); cutoff30.setDate(cutoff30.getDate() - 30);
         const allShips = (DATA.shipments?.raw) || [];
         const ships30 = allShips.filter(s => s.shipped_at && new Date(s.shipped_at) >= cutoff30);
-        const ships30_delivered = ships30.filter(s => s.status === 'delivered').length;
-        const ships30_rto       = ships30.filter(_isRto).length;
-        const ships30_resolved  = ships30_delivered + ships30_rto;
 
-        // Aggregator breakdown last 30d
-        const aggBreak = {};
-        for (const s of ships30) {
+        // Status breakdown helper — explicit buckets so Claude can see fulfilled vs in-transit vs delivered.
+        const statusBreakdown = (arr) => {
+            const out = { delivered: 0, rto_initiated: 0, rto_in_transit: 0, rto_delivered: 0, in_transit: 0, out_for_delivery: 0, fulfilled_untracked: 0, cancelled: 0, ndr: 0, other: 0 };
+            for (const s of arr) {
+                const st = s.status || '';
+                if (st === 'delivered') out.delivered++;
+                else if (st === 'rto' || st === 'rto_initiated') out.rto_initiated++;
+                else if (st === 'rto_in_transit') out.rto_in_transit++;
+                else if (st === 'rto_delivered') out.rto_delivered++;
+                else if (st === 'in_transit') out.in_transit++;
+                else if (st === 'out_for_delivery') out.out_for_delivery++;
+                else if (st === 'fulfilled') out.fulfilled_untracked++;
+                else if (st === 'cancelled') out.cancelled++;
+                else out.other++;
+                if ((s.ndr_count || 0) > 0) out.ndr++;
+            }
+            return out;
+        };
+
+        // Aggregator (all-time) — biggest signal for ITL vs Velocity RTO patterns.
+        const aggAllTime = {};
+        for (const s of allShips) {
             const k = (s.aggregator || 'unknown').toLowerCase();
-            aggBreak[k] = aggBreak[k] || { total: 0, delivered: 0, rto: 0 };
-            aggBreak[k].total++;
-            if (s.status === 'delivered') aggBreak[k].delivered++;
-            if (_isRto(s)) aggBreak[k].rto++;
+            aggAllTime[k] = aggAllTime[k] || { total: 0, delivered: 0, rto: 0, ndr: 0 };
+            aggAllTime[k].total++;
+            if (s.status === 'delivered') aggAllTime[k].delivered++;
+            if (_isRto(s))                aggAllTime[k].rto++;
+            if ((s.ndr_count || 0) > 0)   aggAllTime[k].ndr++;
         }
+        for (const k of Object.keys(aggAllTime)) {
+            const v = aggAllTime[k];
+            v.rto_pct = +_canonicalRtoRate(v.delivered, v.rto).toFixed(1);
+        }
+
+        // Payment mode RTO (all-time) — the COD vs prepaid story.
+        const codDelivered = allShips.filter(s => s.payment_mode === 'cod'     && s.status === 'delivered').length;
+        const codRto       = allShips.filter(s => s.payment_mode === 'cod'     && _isRto(s)).length;
+        const ppDelivered  = allShips.filter(s => s.payment_mode === 'prepaid' && s.status === 'delivered').length;
+        const ppRto        = allShips.filter(s => s.payment_mode === 'prepaid' && _isRto(s)).length;
+
+        // Top zones by volume + worst states by RTO% (statistical floor: 10+ resolved).
+        const byZone = {}, byState = {};
+        for (const s of allShips) {
+            if (s.delivery_zone) {
+                const z = s.delivery_zone;
+                byZone[z] = byZone[z] || { total: 0, delivered: 0, rto: 0 };
+                byZone[z].total++;
+                if (s.status === 'delivered') byZone[z].delivered++;
+                if (_isRto(s))                byZone[z].rto++;
+            }
+            if (s.dest_state) {
+                const st = s.dest_state;
+                byState[st] = byState[st] || { total: 0, delivered: 0, rto: 0 };
+                byState[st].total++;
+                if (s.status === 'delivered') byState[st].delivered++;
+                if (_isRto(s))                byState[st].rto++;
+            }
+        }
+        const topZones = Object.entries(byZone).map(([z, v]) => ({ zone: z, total: v.total, delivered: v.delivered, rto: v.rto, rto_pct: +_canonicalRtoRate(v.delivered, v.rto).toFixed(1) })).sort((a, b) => b.total - a.total).slice(0, 8);
+        const worstStates = Object.entries(byState).map(([s, v]) => ({ state: s, total: v.total, rto: v.rto, rto_pct: +_canonicalRtoRate(v.delivered, v.rto).toFixed(1) })).filter(x => (x.total) >= 20).sort((a, b) => b.rto_pct - a.rto_pct).slice(0, 8);
+
+        // Top NDR reasons.
+        const ndrReasons = {};
+        for (const s of allShips) {
+            if (!s.ndr_reason) continue;
+            const r = String(s.ndr_reason).slice(0, 80);
+            ndrReasons[r] = (ndrReasons[r] || 0) + 1;
+        }
+        const topNdrReasons = Object.entries(ndrReasons).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([r, c]) => ({ reason: r, count: c }));
 
         return {
             today_date: new Date().toISOString().slice(0, 10),
@@ -8339,8 +8412,27 @@
             last_30d: { rev: r2(sum(last30,'rev')), orders: sum(last30,'orders'), profit: r2(sum(last30,'profit')), ad_spend: r2(sum(last30,'adSpend')), cogs: r2(sum(last30,'cogs')), delivered: sum(last30,'delivered'), rto: sum(last30,'rto') },
             top_products_30d: top10,
             top_brands_by_spend_30d: topBrands,
-            shipping_30d: { total: ships30.length, delivered: ships30_delivered, rto: ships30_rto, resolved: ships30_resolved, by_aggregator: aggBreak },
+            shipping_30d_status_breakdown: statusBreakdown(ships30),
+            shipping_alltime: {
+                total_shipments: allShips.length,
+                status_breakdown: statusBreakdown(allShips),
+                blended_rto_pct: +_canonicalRtoRate(allShips.filter(s => s.status === 'delivered').length, allShips.filter(_isRto).length).toFixed(1),
+                by_aggregator: aggAllTime,
+                by_payment_mode: {
+                    cod:     { delivered: codDelivered, rto: codRto, rto_pct: +_canonicalRtoRate(codDelivered, codRto).toFixed(1) },
+                    prepaid: { delivered: ppDelivered,  rto: ppRto,  rto_pct: +_canonicalRtoRate(ppDelivered,  ppRto).toFixed(1) },
+                },
+                top_zones_by_volume: topZones,
+                worst_states_by_rto_pct: worstStates,
+                top_ndr_reasons: topNdrReasons,
+            },
             campaign_attribution_30d: DATA.campaignAttributionSummary?.spend30d ? { attributed: r2(DATA.campaignAttributionSummary.spend30d.attributed), unattributed: r2(DATA.campaignAttributionSummary.spend30d.unattributed) } : null,
+            _data_notes: [
+                "Recent shipments (within last 30d) often have status='fulfilled' because ITL's tracking-sync function refreshes on a delayed cron. For RTO/delivery analysis, prefer shipping_alltime — that reflects the fully-resolved historical record.",
+                "shipping_30d_status_breakdown.fulfilled_untracked > 0 means those shipments are physically moving but their tracking status hasn't been refreshed yet; don't read that as 'no RTO problem' — read it as 'recent data not yet labelled'.",
+                "Velocity API access was disabled by the provider; current ops route through ITL. Velocity rows in shipping_alltime are historical.",
+                "Brand-level numbers: aggregate orders/items by joining order_items.product_id -> product brand-key (_normalizeProductKey on product name).",
+            ],
         };
     }
 
@@ -8383,6 +8475,8 @@
 
     function _resetChat() {
         _chatMessages = [];
+        const spotlight = document.querySelector('.search-spotlight');
+        if (spotlight) spotlight.classList.remove('chat-mode');
         const input = document.getElementById('searchInput');
         if (input) {
             input.placeholder = 'Ask anything about Flanq — products, orders, customers, campaigns, insights…';
@@ -8501,21 +8595,21 @@
     }
 
     function _renderChatThreadInto(thinking) {
-        // Re-render the whole results panel so the chat thread sits ABOVE the suggestion chips
-        // and any entity-search sections fade out while the chat is active.
+        const spotlight = document.querySelector('.search-spotlight');
+        if (spotlight) spotlight.classList.toggle('chat-mode', _chatMessages.length > 0);
         document.getElementById('searchSuggestions').style.display = _chatMessages.length ? 'none' : 'flex';
         const wrap = document.getElementById('searchResults');
-        const threadHtml = _renderChatThread(thinking);
-        // Preserve the (already rendered) entity sections by checking if a non-chat section is there.
-        // We re-render entity sections from the last cached search payload, omitted while chat is live.
-        wrap.innerHTML = threadHtml;
+        wrap.innerHTML = _renderChatThread(thinking);
     }
 
     function _scrollChatToBottom() {
-        const thread = document.getElementById('chatThread');
-        if (!thread) return;
-        // Smooth scroll the page to the bottom of the thread.
-        thread.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        // Scroll so the LATEST bubble + input are visible at the viewport bottom.
+        // The .content wrapper is the scroll container.
+        requestAnimationFrame(() => {
+            const last = document.querySelectorAll('#chatThread .chat-msg, #chatThread .chat-thinking');
+            const target = last[last.length - 1];
+            if (target) target.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        });
     }
 
     function _formatBytes(n) {
