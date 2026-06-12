@@ -160,6 +160,131 @@
 
         .tab-content { display: none; }
         .tab-content.active { display: block; animation: fadeIn 0.3s ease; }
+
+        /* ===== Spotlight Search ===== */
+        .search-spotlight { max-width: 920px; margin: 24px auto 80px; }
+        .search-spotlight-header { margin-bottom: 24px; }
+        .search-input-wrap {
+            position: relative; display: flex; align-items: center; gap: 10px;
+            background: var(--surface); border: 1.5px solid var(--border); border-radius: 14px;
+            padding: 14px 18px; box-shadow: 0 8px 32px rgba(var(--purple-rgb), 0.06), 0 2px 6px rgba(0,0,0,.04);
+            transition: border-color 0.18s, box-shadow 0.18s;
+        }
+        .search-input-wrap:focus-within {
+            border-color: var(--purple);
+            box-shadow: 0 8px 40px rgba(var(--purple-rgb), 0.16), 0 2px 8px rgba(0,0,0,.05);
+        }
+        .search-input-icon { color: var(--text-sec); flex-shrink: 0; }
+        .search-input {
+            flex: 1; border: none; outline: none; background: transparent;
+            font-size: 17px; color: var(--text-pri); font-family: inherit;
+        }
+        .search-input::placeholder { color: var(--text-sec); }
+        .search-ai-btn {
+            border: 1px solid var(--border); background: transparent; color: var(--text-sec);
+            padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 600;
+            cursor: pointer; white-space: nowrap; transition: all 0.15s; font-family: inherit;
+        }
+        .search-ai-btn:not(:disabled):hover {
+            border-color: var(--purple); color: var(--purple); background: rgba(var(--purple-rgb), 0.06);
+        }
+        .search-ai-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .search-hint {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-top: 10px; padding: 0 6px; font-size: 11px; color: var(--text-sec);
+        }
+        .search-hint kbd {
+            background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px;
+            padding: 1px 5px; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 10px;
+            color: var(--text-pri);
+        }
+        .search-stats { font-weight: 600; color: var(--purple); }
+
+        .search-suggestions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+        .search-suggest-chip {
+            background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+            padding: 7px 14px; font-size: 12px; color: var(--text-pri); cursor: pointer;
+            transition: all 0.15s; display: inline-flex; align-items: center; gap: 6px;
+        }
+        .search-suggest-chip:hover {
+            border-color: var(--purple); background: rgba(var(--purple-rgb), 0.06); color: var(--purple);
+        }
+        .search-suggest-chip-icon { font-size: 13px; }
+
+        .search-results { display: flex; flex-direction: column; gap: 18px; }
+        .search-section {
+            background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+            padding: 14px 16px; animation: fadeIn 0.18s ease;
+        }
+        .search-section-header {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 10px; font-size: 11px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.06em; color: var(--text-sec);
+        }
+        .search-section-count {
+            background: var(--surface-2); border-radius: 999px; padding: 2px 8px;
+            font-size: 10px; color: var(--text-sec); font-weight: 700; letter-spacing: 0;
+        }
+        .search-result-row {
+            display: flex; align-items: center; gap: 12px; padding: 9px 10px; border-radius: 8px;
+            cursor: pointer; transition: background 0.12s;
+        }
+        .search-result-row:hover, .search-result-row.active {
+            background: rgba(var(--purple-rgb), 0.06);
+        }
+        .search-result-icon {
+            width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center; font-size: 15px;
+            background: rgba(var(--purple-rgb), 0.10); color: var(--purple);
+        }
+        .search-result-body { flex: 1; min-width: 0; }
+        .search-result-title {
+            font-size: 13px; font-weight: 600; color: var(--text-pri);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .search-result-meta { font-size: 11px; color: var(--text-sec); margin-top: 2px; }
+        .search-result-stats {
+            font-size: 11px; color: var(--text-sec); white-space: nowrap;
+            display: flex; gap: 12px; align-items: center;
+        }
+        .search-result-stats b { color: var(--text-pri); font-weight: 700; }
+
+        /* ===== Quick Answer Card (intent recognized) ===== */
+        .search-answer {
+            background: linear-gradient(135deg, rgba(var(--purple-rgb), 0.08) 0%, rgba(var(--purple-rgb), 0.02) 100%);
+            border: 1px solid rgba(var(--purple-rgb), 0.20); border-radius: 14px;
+            padding: 18px 20px; animation: fadeIn 0.2s ease;
+        }
+        .search-answer-label {
+            font-size: 10px; font-weight: 700; color: var(--purple); text-transform: uppercase;
+            letter-spacing: 0.08em; margin-bottom: 8px;
+        }
+        .search-answer-headline { font-size: 24px; font-weight: 700; color: var(--text-pri); margin-bottom: 4px; }
+        .search-answer-sub { font-size: 13px; color: var(--text-sec); margin-bottom: 12px; }
+        .search-answer-body { font-size: 13px; color: var(--text-pri); line-height: 1.5; }
+        .search-answer-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 10px; margin-top: 12px;
+        }
+        .search-answer-stat {
+            background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+            padding: 10px 12px;
+        }
+        .search-answer-stat-label { font-size: 10px; color: var(--text-sec); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+        .search-answer-stat-value { font-size: 18px; font-weight: 700; color: var(--text-pri); margin-top: 4px; }
+        .search-answer-stat-delta { font-size: 11px; margin-top: 2px; }
+        .search-answer-mini-bars {
+            display: flex; gap: 4px; align-items: flex-end; margin-top: 10px; height: 50px;
+        }
+        .search-answer-mini-bar {
+            flex: 1; background: linear-gradient(180deg, var(--purple), rgba(var(--purple-rgb), 0.4));
+            border-radius: 3px 3px 0 0; min-height: 4px;
+        }
+
+        .search-empty-state {
+            text-align: center; padding: 40px 20px; color: var(--text-sec); font-size: 13px;
+        }
+        .search-empty-state-icon { font-size: 32px; margin-bottom: 10px; opacity: 0.4; }
         @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
 
         /* ===== KPI CARDS — 3-layer design with tinted backgrounds (Edit 1) ===== */
@@ -1169,6 +1294,7 @@
         <div class="sidebar" id="sidebar">
             <div class="sidebar-brand">Flanq</div>
             <div class="nav-group">
+                <div class="nav-item" data-tab="search" title="Search (⌘K)"><div class="nav-icon" style="display:inline-flex;align-items:center;justify-content:center;color:var(--purple);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div><div class="nav-label" style="opacity:0.6;font-size:11px;">⌘K</div></div>
                 <div class="nav-item active" data-tab="overview"><div class="nav-icon" style="display:inline-flex;align-items:center;justify-content:center;color:var(--purple);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div><div class="nav-label">Key Insights</div></div>
                 <div class="nav-item" data-tab="ads"><div class="nav-icon" style="display:inline-flex;align-items:center;justify-content:center;color:var(--purple);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-5v12L3 13v-2z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg></div><div class="nav-label">Ad <span style="color:var(--purple);font-weight:800;">Pulse</span></div></div>
                 <div class="nav-item" data-tab="finance"><div class="nav-icon" style="display:inline-flex;align-items:center;justify-content:center;color:var(--purple);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 0 2H9.83a2 2 0 0 0-1.92 2.56l2.33 8A2 2 0 0 0 12.46 20h8.3a2 2 0 0 0 1.946-2.488l-2.28-9.89A2 2 0 0 0 18.146 7H19z"/></svg></div><div class="nav-label">Finance</div></div>
@@ -1237,6 +1363,7 @@
 
             <div class="content">
                 <div class="tabs">
+                    <button class="tab-button" data-tab="search" title="Search (⌘K)" style="display:inline-flex;align-items:center;justify-content:center;padding:6px 10px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
                     <button class="tab-button active" data-tab="overview">Key Insights</button>
                     <button class="tab-button" data-tab="ads">Ad <span style="color:var(--purple);font-weight:800;">Pulse</span></button>
                     <button class="tab-button" data-tab="finance">Finance</button>
@@ -1245,6 +1372,25 @@
                     <button class="tab-button" data-tab="settlements">Settlements</button>
                     <button class="tab-button" data-tab="strategy">Strategy</button>
                     <button class="tab-button" data-tab="uniteconomics">Unit Economics</button>
+                </div>
+
+                <!-- ===== SEARCH ===== -->
+                <div class="tab-content" id="search">
+                    <div class="search-spotlight">
+                        <div class="search-spotlight-header">
+                            <div class="search-input-wrap">
+                                <svg class="search-input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                                <input type="text" id="searchInput" class="search-input" placeholder="Ask anything about Flanq — products, orders, customers, campaigns, insights…" autocomplete="off" spellcheck="false" />
+                                <button id="searchAiBtn" class="search-ai-btn" title="Ask Claude (set ANTHROPIC_API_KEY on Supabase edge function to enable)" disabled>✨ Ask AI</button>
+                            </div>
+                            <div class="search-hint">
+                                <span><kbd>⌘K</kbd> focus · <kbd>↑↓</kbd> navigate · <kbd>Enter</kbd> open · <kbd>Esc</kbd> clear</span>
+                                <span class="search-stats" id="searchStats"></span>
+                            </div>
+                        </div>
+                        <div class="search-suggestions" id="searchSuggestions"></div>
+                        <div class="search-results" id="searchResults"></div>
+                    </div>
                 </div>
 
                 <!-- ===== OVERVIEW ===== -->
@@ -7165,7 +7311,7 @@
     }
 
     // ==================== TAB NAVIGATION ====================
-    const tabTitles = { overview:'Overview', ads:'AdPulse', finance:'Finance', shipping:'Shipping', products:'Products', settlements:'Settlements', strategy:'Strategy' };
+    const tabTitles = { search:'Search', overview:'Overview', ads:'AdPulse', finance:'Finance', shipping:'Shipping', products:'Products', settlements:'Settlements', strategy:'Strategy', uniteconomics:'Unit Economics' };
 
     function switchToTab(tab) {
         document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
@@ -7387,7 +7533,8 @@
     }
 
     function renderTab(tab) {
-        if (tab==='overview') renderOverview();
+        if (tab==='search') renderSearch();
+        else if (tab==='overview') renderOverview();
         else if (tab==='products') renderProducts();
         else if (tab==='ads') renderAds();
         else if (tab==='finance') { renderFinance(); showValidationResult('financeValidation', validateFinanceRender()); }
@@ -7398,6 +7545,486 @@
         _rvLastDur = document.getElementById('durationSelect').value;
         if (typeof syncDWMToggles === 'function') syncDWMToggles();
     }
+
+    // ==================== SEARCH (spotlight) ====================
+    // Tier 1 — instant client-side over DATA + intent recognition. Tier 2 (Claude API) is
+    // a separate Supabase edge function; the "Ask AI" button is wired but disabled until
+    // ANTHROPIC_API_KEY is configured server-side.
+    const SEARCH_SUGGESTIONS = [
+        { icon: '🏆', label: 'Top selling products',     q: 'top products' },
+        { icon: '📅', label: "Today's metrics",          q: 'today' },
+        { icon: '↩️',  label: 'High RTO orders',          q: 'high rto' },
+        { icon: '🚚', label: 'Recent shipments',         q: 'recent shipments' },
+        { icon: '💰', label: 'COD cash collected (30d)', q: 'cod cash' },
+        { icon: '📈', label: 'Yesterday vs today',       q: 'yesterday' },
+        { icon: '🎯', label: 'Best ROAS campaigns',      q: 'best roas' },
+        { icon: '⚠️', label: 'Cancelled orders',         q: 'cancelled orders' },
+    ];
+
+    function _fmtR(n) { return '₹' + Math.round(n||0).toLocaleString('en-IN'); }
+    function _fmtRk(n) {
+        const v = Number(n) || 0;
+        if (Math.abs(v) >= 1e7) return '₹' + (v/1e7).toFixed(2) + 'Cr';
+        if (Math.abs(v) >= 1e5) return '₹' + (v/1e5).toFixed(2) + 'L';
+        if (Math.abs(v) >= 1e3) return '₹' + (v/1e3).toFixed(1) + 'K';
+        return '₹' + Math.round(v).toLocaleString('en-IN');
+    }
+    function _fmtPct(n) { return ((n||0).toFixed(1)) + '%'; }
+    function _fmtDate(d) { return (d||'').slice(0,10); }
+
+    function renderSearch() {
+        const input = document.getElementById('searchInput');
+        if (!input) return;
+        _renderSearchSuggestions();
+        if (input.value) _runSearch(input.value);
+        else _renderSearchResults(null);
+        // Focus the input when the user lands on the tab.
+        setTimeout(() => input.focus(), 30);
+    }
+
+    function _renderSearchSuggestions() {
+        const wrap = document.getElementById('searchSuggestions');
+        wrap.innerHTML = SEARCH_SUGGESTIONS.map(s =>
+            `<div class="search-suggest-chip" data-q="${s.q}"><span class="search-suggest-chip-icon">${s.icon}</span>${s.label}</div>`
+        ).join('');
+        wrap.querySelectorAll('.search-suggest-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                const q = chip.dataset.q;
+                document.getElementById('searchInput').value = q;
+                _runSearch(q);
+            });
+        });
+    }
+
+    // ---------- Intent recognizers ----------
+    const SEARCH_INTENTS = [
+        { re: /\btop\s+(selling\s+)?(products?|skus?|items?)\b/i, run: _intentTopProducts },
+        { re: /\bbest\s+(roas|performing)\b|\btop\s+(campaigns?|roas)\b/i,           run: _intentBestRoas },
+        { re: /^today('?s)?(\s+(metrics?|stats?|numbers?|revenue|orders?|profit))?$/i, run: () => _intentDay(0) },
+        { re: /^yesterday('?s)?(\s+(metrics?|stats?|numbers?))?$/i,                   run: () => _intentDay(1) },
+        { re: /\b(this\s+week|7\s*d(ays?)?|last\s+7)\b/i,                              run: () => _intentRange(7) },
+        { re: /\b(this\s+month|30\s*d(ays?)?|last\s+30)\b/i,                           run: () => _intentRange(30) },
+        { re: /\b(high\s+rto|rto\s+(rate|orders?)|cod\s+rto)\b/i,                      run: _intentHighRto },
+        { re: /\b(recent|latest|new)\s+(orders?|shipments?)\b/i,                       run: _intentRecent },
+        { re: /\b(cancel(l)?ed|void(ed)?)\s+orders?\b/i,                               run: _intentCancelled },
+        { re: /\b(cod|prepaid)\s+(cash|collected|revenue)\b|\bcash\s+(collected|position)\b/i, run: _intentCash },
+    ];
+
+    function _intentTopProducts() {
+        const rows = _productsScored(30);
+        const top = rows.slice(0, 10);
+        const total30 = rows.reduce((a, r) => a + r.rev, 0);
+        const top3 = top.slice(0, 3).reduce((a, r) => a + r.rev, 0);
+        const maxRev = Math.max(...top.map(r => r.rev), 1);
+        const bars = top.map(r => `<div class="search-answer-mini-bar" title="${r.p.name}: ${_fmtRk(r.rev)}" style="height:${Math.max(4, r.rev/maxRev*50)}px;"></div>`).join('');
+        return {
+            label: 'Top products · last 30 days',
+            headline: top[0]?.p?.name?.split(' ').slice(0,3).join(' ') || 'No data',
+            sub: top[0] ? `leads with ${_fmtRk(top[0].rev)} of revenue (${(top[0].rev/Math.max(total30,1)*100).toFixed(1)}% of brand)` : '',
+            grid: [
+                { label: '30d revenue', value: _fmtRk(total30) },
+                { label: 'Top 3 share', value: ((top3/Math.max(total30,1))*100).toFixed(0) + '%' },
+                { label: 'Tracked SKUs', value: rows.filter(r => r.qty > 0).length },
+            ],
+            mini: bars,
+            list: top.map(r => ({
+                icon: '📦',
+                title: r.p.name,
+                meta: `pid ${r.p.id} · COGS ${_fmtR(r.p.cost_per_item||0)}/unit`,
+                stats: [['Revenue', _fmtRk(r.rev)], ['Qty', String(r.qty)]],
+            })),
+        };
+    }
+
+    function _intentBestRoas() {
+        const ads = (DATA.adSpend || []).filter(a => a.campaign_id && a.campaign_name !== 'Meta - Aggregate');
+        const byBrand = {};
+        for (const a of ads) {
+            const key = _normalizeProductKey(a.campaign_name);
+            if (!byBrand[key]) byBrand[key] = { spend: 0, rev: 0, purchases: 0, key };
+            byBrand[key].spend += parseFloat(a.spend) || 0;
+            byBrand[key].rev += parseFloat(a.purchase_value) || 0;
+            byBrand[key].purchases += parseInt(a.purchases) || 0;
+        }
+        const list = Object.values(byBrand)
+            .filter(b => b.spend > 100)
+            .map(b => ({ ...b, roas: b.spend > 0 ? b.rev / b.spend : 0 }))
+            .sort((a, b) => b.roas - a.roas)
+            .slice(0, 10);
+        return {
+            label: 'Best ROAS · all time',
+            headline: list[0] ? list[0].key + ' · ' + list[0].roas.toFixed(2) + 'x' : 'No data',
+            sub: list[0] ? `${_fmtRk(list[0].rev)} revenue on ${_fmtRk(list[0].spend)} spend` : '',
+            list: list.map(b => ({
+                icon: '🎯',
+                title: b.key,
+                meta: `${b.purchases} purchases`,
+                stats: [['Spend', _fmtRk(b.spend)], ['Revenue', _fmtRk(b.rev)], ['ROAS', `<b style="color:${b.roas>=3?'var(--green)':b.roas>=2?'var(--amber)':'var(--red)'}">${b.roas.toFixed(2)}x</b>`]],
+            })),
+        };
+    }
+
+    function _intentDay(daysBack) {
+        const dm = DATA.dailyMetrics || [];
+        if (!dm.length) return { label: 'No data', headline: '—' };
+        const row = dm[dm.length - 1 - daysBack];
+        if (!row) return { label: 'No data for that day', headline: '—' };
+        const prev = dm[dm.length - 1 - daysBack - 1];
+        const delta = (cur, p, isPct) => {
+            if (!p || p === 0) return '';
+            const ch = ((cur - p) / Math.abs(p)) * 100;
+            const arrow = ch > 0 ? '↑' : ch < 0 ? '↓' : '→';
+            const col = ch > 0 ? 'var(--green)' : ch < 0 ? 'var(--red)' : 'var(--text-sec)';
+            return `<span style="color:${col}">${arrow} ${Math.abs(ch).toFixed(1)}%</span>`;
+        };
+        return {
+            label: (daysBack === 0 ? 'Today' : daysBack === 1 ? 'Yesterday' : `${daysBack} days ago`) + ' · ' + row.d,
+            headline: `${_fmtRk(row.rev)} · ${row.orders} orders`,
+            sub: `Profit ${_fmtRk(row.profit)} · Margin ${row.margin.toFixed(1)}%`,
+            grid: [
+                { label: 'Revenue', value: _fmtRk(row.rev), delta: prev ? delta(row.rev, prev.rev) : '' },
+                { label: 'Orders', value: row.orders, delta: prev ? delta(row.orders, prev.orders) : '' },
+                { label: 'Ad Spend', value: _fmtRk(row.adSpend), delta: prev ? delta(row.adSpend, prev.adSpend) : '' },
+                { label: 'COGS', value: _fmtRk(row.cogs) },
+                { label: 'Net Profit', value: _fmtRk(row.profit), delta: prev ? delta(row.profit, prev.profit) : '' },
+                { label: 'AOV', value: _fmtR(row.aov), delta: prev ? delta(row.aov, prev.aov) : '' },
+            ],
+        };
+    }
+
+    function _intentRange(days) {
+        const dm = DATA.dailyMetrics || [];
+        if (!dm.length) return { label: 'No data', headline: '—' };
+        const slice = dm.slice(-days);
+        const sum = (k) => slice.reduce((a, r) => a + (r[k] || 0), 0);
+        const tRev = sum('rev'), tOrd = sum('orders'), tProf = sum('profit'), tAd = sum('adSpend');
+        const maxRev = Math.max(...slice.map(r => r.rev), 1);
+        const bars = slice.map(r => `<div class="search-answer-mini-bar" title="${r.d}: ${_fmtRk(r.rev)}" style="height:${Math.max(4, r.rev/maxRev*50)}px;"></div>`).join('');
+        return {
+            label: `Last ${days} days · ${slice[0].d} → ${slice[slice.length-1].d}`,
+            headline: `${_fmtRk(tRev)} revenue · ${tOrd} orders`,
+            sub: `Net profit ${_fmtRk(tProf)} · Margin ${tRev>0?((tProf/tRev*100).toFixed(1)+'%'):'—'} · ROAS ${tAd>0?(tRev/tAd).toFixed(2)+'x':'—'}`,
+            grid: [
+                { label: 'Revenue', value: _fmtRk(tRev) },
+                { label: 'Orders', value: tOrd },
+                { label: 'Ad Spend', value: _fmtRk(tAd) },
+                { label: 'AOV', value: _fmtR(tOrd>0?tRev/tOrd:0) },
+                { label: 'Profit', value: _fmtRk(tProf) },
+                { label: 'ROAS', value: tAd>0?(tRev/tAd).toFixed(2)+'x':'—' },
+            ],
+            mini: bars,
+        };
+    }
+
+    function _intentHighRto() {
+        const ships = (DATA.shipments?.raw) || [];
+        const rto = ships.filter(_isRto);
+        const delivered = ships.filter(s => s.status === 'delivered');
+        const rtoRate = _canonicalRtoRate(delivered.length, rto.length);
+        // by aggregator
+        const byAgg = {};
+        for (const s of ships) {
+            const k = (s.aggregator || 'unknown').toLowerCase();
+            byAgg[k] = byAgg[k] || { delivered: 0, rto: 0 };
+            if (s.status === 'delivered') byAgg[k].delivered++;
+            if (_isRto(s)) byAgg[k].rto++;
+        }
+        const aggList = Object.entries(byAgg).map(([k, v]) => ({
+            icon: '🚚',
+            title: k.charAt(0).toUpperCase() + k.slice(1),
+            meta: `${v.delivered} delivered · ${v.rto} RTO`,
+            stats: [['RTO Rate', `<b style="color:${_canonicalRtoRate(v.delivered,v.rto)>15?'var(--red)':'var(--text-pri)'}">${_canonicalRtoRate(v.delivered, v.rto).toFixed(1)}%</b>`]],
+        }));
+        return {
+            label: 'RTO snapshot · all time',
+            headline: `${_fmtPct(rtoRate)} blended RTO`,
+            sub: `${rto.length.toLocaleString('en-IN')} RTOs / ${(delivered.length+rto.length).toLocaleString('en-IN')} resolved shipments`,
+            grid: [
+                { label: 'RTO count', value: rto.length },
+                { label: 'Delivered', value: delivered.length },
+                { label: 'RTO rate', value: _fmtPct(rtoRate) },
+            ],
+            list: aggList,
+        };
+    }
+
+    function _intentRecent() {
+        const ships = ((DATA.shipments?.raw) || []).filter(s => s.shipped_at).sort((a, b) => (b.shipped_at || '').localeCompare(a.shipped_at || ''));
+        const orderById = new Map((DATA.orders?.raw || []).map(o => [Number(o.id), o]));
+        const list = ships.slice(0, 12).map(s => {
+            const o = orderById.get(Number(s.order_id));
+            return {
+                icon: s.status === 'delivered' ? '✅' : _isRto(s) ? '↩️' : '🚚',
+                title: `Order ${o?.order_number || s.order_id} · ${s.courier || 'unknown'}`,
+                meta: `${_fmtDate(s.shipped_at)} · AWB ${s.awb_number || '—'}`,
+                stats: [['Status', `<b>${(s.status || 'fulfilled').toUpperCase()}</b>`], ['Cost', _fmtR(s.shipping_cost || 0)]],
+            };
+        });
+        return { label: 'Recent shipments', headline: `${list.length} most recent shipments`, list };
+    }
+
+    function _intentCancelled() {
+        const orders = (DATA.orders?.raw || []).filter(o => o.financial_status === 'voided' || o.financial_status === 'refunded' || o.fulfillment_status === 'restocked');
+        const total = orders.reduce((a, o) => a + (parseFloat(o.total) || 0), 0);
+        return {
+            label: 'Cancelled / refunded / restocked orders',
+            headline: `${orders.length} orders · ${_fmtRk(total)} blocked revenue`,
+            sub: `Per locked formula: gateway fee still applies; COGS + packaging recovered`,
+            grid: [
+                { label: 'Voided', value: orders.filter(o => o.financial_status === 'voided').length },
+                { label: 'Refunded', value: orders.filter(o => o.financial_status === 'refunded').length },
+                { label: 'Restocked', value: orders.filter(o => o.fulfillment_status === 'restocked').length },
+                { label: 'Lost revenue', value: _fmtRk(total) },
+            ],
+            list: orders.slice(0, 10).map(o => ({
+                icon: '⚠️',
+                title: `Order ${o.order_number}`,
+                meta: `${_fmtDate(o.order_date)} · ${o.financial_status || o.fulfillment_status}`,
+                stats: [['Value', _fmtR(o.total)]],
+            })),
+        };
+    }
+
+    function _intentCash() {
+        const dm30 = (DATA.dailyMetrics || []).slice(-30);
+        const cashPrepaid = dm30.reduce((a, d) => a + (d.cashPrepaid || 0), 0);
+        const cashCOD = dm30.reduce((a, d) => a + (d.cashCOD || 0), 0);
+        const rev = dm30.reduce((a, d) => a + (d.rev || 0), 0);
+        return {
+            label: 'Cash collected · last 30 days',
+            headline: `${_fmtRk(cashPrepaid + cashCOD)} collected`,
+            sub: `${_fmtRk(rev)} billed (${(((cashPrepaid+cashCOD)/Math.max(rev,1))*100).toFixed(0)}% collection rate)`,
+            grid: [
+                { label: 'Prepaid', value: _fmtRk(cashPrepaid) },
+                { label: 'COD remitted', value: _fmtRk(cashCOD) },
+                { label: 'In transit', value: _fmtRk(Math.max(rev - cashPrepaid - cashCOD, 0)) },
+            ],
+        };
+    }
+
+    // ---------- Tier 1 keyword search across entities ----------
+    function _productsScored(daysBack) {
+        const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - daysBack);
+        const orderById = new Map((DATA.orders?.raw || []).map(o => [Number(o.id), o]));
+        const rev = new Map(), qty = new Map();
+        for (const it of (DATA.orderItems || [])) {
+            const o = orderById.get(Number(it.order_id));
+            if (!o || !o.order_date || new Date(o.order_date) < cutoff) continue;
+            const pid = Number(it.product_id);
+            rev.set(pid, (rev.get(pid) || 0) + (parseFloat(it.line_total) || 0));
+            qty.set(pid, (qty.get(pid) || 0) + (parseInt(it.quantity) || 0));
+        }
+        return (DATA.products || [])
+            .map(p => ({ p, rev: rev.get(p.id) || 0, qty: qty.get(p.id) || 0 }))
+            .filter(r => r.rev > 0 || r.qty > 0)
+            .sort((a, b) => b.rev - a.rev);
+    }
+
+    function _searchProducts(q) {
+        const ql = q.toLowerCase();
+        const all = (DATA.products || []).filter(p => p.name && p.name.toLowerCase().includes(ql));
+        const items = DATA.orderItems || [];
+        const orderById = new Map((DATA.orders?.raw || []).map(o => [Number(o.id), o]));
+        const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 30);
+        const stats = {};
+        for (const it of items) {
+            if (!all.some(p => p.id === it.product_id)) continue;
+            const o = orderById.get(Number(it.order_id));
+            if (!o || !o.order_date || new Date(o.order_date) < cutoff) continue;
+            const pid = it.product_id;
+            stats[pid] = stats[pid] || { rev: 0, qty: 0 };
+            stats[pid].rev += parseFloat(it.line_total) || 0;
+            stats[pid].qty += parseInt(it.quantity) || 0;
+        }
+        return all
+            .map(p => ({
+                icon: '📦',
+                title: p.name,
+                meta: `pid ${p.id} · COGS ${_fmtR(p.cost_per_item || 0)}/unit · GST ${p.gst_percent || 18}%`,
+                stats: [
+                    ['30d Rev', _fmtRk(stats[p.id]?.rev || 0)],
+                    ['30d Qty', String(stats[p.id]?.qty || 0)],
+                ],
+                _payload: { type: 'product', id: p.id },
+            }))
+            .sort((a, b) => (parseInt(b.stats[1][1]) - parseInt(a.stats[1][1])))
+            .slice(0, 10);
+    }
+
+    function _searchOrders(q) {
+        const ql = q.toLowerCase();
+        const all = DATA.orders?.raw || [];
+        const matches = all.filter(o =>
+            (o.order_number && String(o.order_number).toLowerCase().includes(ql)) ||
+            (o.customer_name && String(o.customer_name).toLowerCase().includes(ql)) ||
+            (o.customer_email && String(o.customer_email).toLowerCase().includes(ql)) ||
+            (o.customer_phone && String(o.customer_phone).includes(q))
+        );
+        return matches.slice(0, 12).map(o => ({
+            icon: o.financial_status === 'voided' ? '⚠️' : o.financial_status === 'refunded' ? '↩️' : '🛒',
+            title: `Order ${o.order_number} · ${o.customer_name || 'Unknown'}`,
+            meta: `${_fmtDate(o.order_date)} · ${o.payment_type} · ${o.financial_status}`,
+            stats: [['Total', _fmtR(o.total)]],
+            _payload: { type: 'order', id: o.id, shopify_order_id: o.shopify_order_id },
+        }));
+    }
+
+    function _searchCustomers(q) {
+        const ql = q.toLowerCase();
+        if (ql.length < 3) return [];
+        const map = new Map();
+        for (const o of (DATA.orders?.raw || [])) {
+            const key = o.customer_email || o.customer_phone || o.customer_name;
+            if (!key) continue;
+            const hay = `${o.customer_name || ''} ${o.customer_email || ''} ${o.customer_phone || ''}`.toLowerCase();
+            if (!hay.includes(ql)) continue;
+            const c = map.get(key) || { name: o.customer_name, email: o.customer_email, phone: o.customer_phone, orders: 0, revenue: 0, lastOrder: '' };
+            c.orders++;
+            c.revenue += parseFloat(o.total) || 0;
+            if (o.order_date > (c.lastOrder || '')) c.lastOrder = o.order_date;
+            map.set(key, c);
+        }
+        return [...map.values()]
+            .sort((a, b) => b.revenue - a.revenue)
+            .slice(0, 10)
+            .map(c => ({
+                icon: '👤',
+                title: c.name || c.email || c.phone || 'Unknown',
+                meta: `${c.email || ''} · ${c.phone || ''} · last ${_fmtDate(c.lastOrder)}`,
+                stats: [['Orders', String(c.orders)], ['LTV', _fmtRk(c.revenue)]],
+                _payload: { type: 'customer', key: c.email || c.phone || c.name },
+            }));
+    }
+
+    function _searchCampaigns(q) {
+        const ql = q.toLowerCase();
+        const ads = (DATA.adSpend || []).filter(a => a.campaign_name && a.campaign_name.toLowerCase().includes(ql));
+        const byCampaign = {};
+        for (const a of ads) {
+            const k = a.campaign_id || a.campaign_name;
+            byCampaign[k] = byCampaign[k] || { name: a.campaign_name, spend: 0, rev: 0, purchases: 0 };
+            byCampaign[k].spend += parseFloat(a.spend) || 0;
+            byCampaign[k].rev += parseFloat(a.purchase_value) || 0;
+            byCampaign[k].purchases += parseInt(a.purchases) || 0;
+        }
+        return Object.values(byCampaign)
+            .sort((a, b) => b.spend - a.spend)
+            .slice(0, 10)
+            .map(c => ({
+                icon: '🎯',
+                title: c.name,
+                meta: `${c.purchases} purchases · brand ${_normalizeProductKey(c.name)}`,
+                stats: [['Spend', _fmtRk(c.spend)], ['ROAS', c.spend > 0 ? (c.rev / c.spend).toFixed(2) + 'x' : '—']],
+                _payload: { type: 'campaign', name: c.name },
+            }));
+    }
+
+    // ---------- Search orchestration ----------
+    let _searchT = null;
+    function _runSearch(query) {
+        const q = (query || '').trim();
+        if (!q) { _renderSearchResults(null); return; }
+        clearTimeout(_searchT);
+        _searchT = setTimeout(() => {
+            const t0 = performance.now();
+            // 1. Intent first.
+            let answer = null;
+            for (const intent of SEARCH_INTENTS) {
+                if (intent.re.test(q)) { try { answer = intent.run(q); } catch(e) { console.warn('[search] intent failed', e); } break; }
+            }
+            // 2. Entity searches always run alongside (so user sees product matches even if intent fires).
+            const products  = _searchProducts(q);
+            const orders    = _searchOrders(q);
+            const customers = _searchCustomers(q);
+            const campaigns = _searchCampaigns(q);
+            const t1 = performance.now();
+            document.getElementById('searchStats').textContent = `${(answer?1:0) + products.length + orders.length + customers.length + campaigns.length} results · ${(t1-t0).toFixed(0)}ms`;
+            _renderSearchResults({ answer, products, orders, customers, campaigns });
+        }, 90);
+    }
+
+    function _renderSearchResults(payload) {
+        const wrap = document.getElementById('searchResults');
+        if (!payload) { wrap.innerHTML = ''; document.getElementById('searchStats').textContent = ''; return; }
+        const { answer, products, orders, customers, campaigns } = payload;
+        const sections = [];
+        if (answer) sections.push(_renderAnswer(answer));
+        if (products.length)  sections.push(_renderSection('Products', products));
+        if (orders.length)    sections.push(_renderSection('Orders', orders));
+        if (customers.length) sections.push(_renderSection('Customers', customers));
+        if (campaigns.length) sections.push(_renderSection('Campaigns', campaigns));
+        if (!sections.length) {
+            wrap.innerHTML = `<div class="search-empty-state"><div class="search-empty-state-icon">🔍</div>No matches across products, orders, customers or campaigns. Try a brand name, an order number, or a phrase like "top products" or "yesterday".</div>`;
+            return;
+        }
+        wrap.innerHTML = sections.join('');
+        wrap.querySelectorAll('.search-result-row').forEach(row => {
+            row.addEventListener('click', () => _onResultClick(JSON.parse(row.dataset.payload)));
+        });
+    }
+
+    function _renderAnswer(a) {
+        const grid = a.grid ? `<div class="search-answer-grid">${a.grid.map(g => `<div class="search-answer-stat"><div class="search-answer-stat-label">${g.label}</div><div class="search-answer-stat-value">${g.value}</div>${g.delta ? `<div class="search-answer-stat-delta">${g.delta}</div>` : ''}</div>`).join('')}</div>` : '';
+        const mini = a.mini ? `<div class="search-answer-mini-bars">${a.mini}</div>` : '';
+        const list = a.list ? _renderSection(null, a.list, true) : '';
+        return `<div class="search-answer">
+            <div class="search-answer-label">${a.label || 'Insight'}</div>
+            <div class="search-answer-headline">${a.headline || ''}</div>
+            ${a.sub ? `<div class="search-answer-sub">${a.sub}</div>` : ''}
+            ${grid}
+            ${mini}
+        </div>${list}`;
+    }
+
+    function _renderSection(title, items, embedded) {
+        const header = title ? `<div class="search-section-header">${title}<span class="search-section-count">${items.length}</span></div>` : '';
+        const rows = items.map(it => `
+            <div class="search-result-row" data-payload='${JSON.stringify(it._payload || {}).replace(/'/g, "&apos;")}'>
+                <div class="search-result-icon">${it.icon}</div>
+                <div class="search-result-body">
+                    <div class="search-result-title">${it.title}</div>
+                    <div class="search-result-meta">${it.meta || ''}</div>
+                </div>
+                <div class="search-result-stats">${(it.stats||[]).map(s => `<span>${s[0]} <b>${s[1]}</b></span>`).join('')}</div>
+            </div>`).join('');
+        return embedded ? `<div class="search-section" style="margin-top:14px;">${header}${rows}</div>` : `<div class="search-section">${header}${rows}</div>`;
+    }
+
+    function _onResultClick(payload) {
+        if (!payload) return;
+        if (payload.type === 'product') {
+            productFilter.set([payload.id]); _invalidateFilterCaches(); _resetDerivedCache();
+            _renderProductFilterChipLabel(); _renderActiveFilterBanner();
+            switchToTab('overview');
+        } else if (payload.type === 'order') {
+            navigator.clipboard?.writeText(String(payload.shopify_order_id || payload.id));
+        } else if (payload.type === 'customer') {
+            document.getElementById('searchInput').value = payload.key;
+            _runSearch(payload.key);
+        } else if (payload.type === 'campaign') {
+            switchToTab('ads');
+        }
+    }
+
+    // Wire input + Cmd+K + AI button (Tier 2 scaffold).
+    document.addEventListener('DOMContentLoaded', () => {
+        const input = document.getElementById('searchInput');
+        if (!input) return;
+        input.addEventListener('input', (e) => _runSearch(e.target.value));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') { input.value = ''; _runSearch(''); }
+        });
+        document.addEventListener('keydown', (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+                e.preventDefault();
+                switchToTab('search');
+            }
+        });
+        const aiBtn = document.getElementById('searchAiBtn');
+        if (aiBtn) aiBtn.addEventListener('click', () => {
+            alert("Claude AI mode requires the 'flanq-ai-search' Supabase edge function with an ANTHROPIC_API_KEY env var. Tell SN's Claude Code agent to scaffold + deploy it when you're ready.");
+        });
+    });
 
     // ==================== EVENT LISTENERS ====================
     document.getElementById('hamburger').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('collapsed'));
