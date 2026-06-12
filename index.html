@@ -2235,7 +2235,10 @@
             console.log(`[ATTR] ${_attr.summary.matched}/${_attr.summary.total} campaigns mapped · ₹${Math.round(_attrSpend30d.attributed).toLocaleString('en-IN')} attributable / ₹${Math.round(_attrSpend30d.unattributed).toLocaleString('en-IN')} unattributable (30d)`);
 
             // LIVE TODAY: Fetch real-time "today" data from go_fetch RPC and inject/replace in dailyMetrics
-            try {
+            // Skip the live RPC merge when a product subset is active — the RPC has no product axis.
+            // Subset path falls through to deriveDailyMetricsForFilter which re-derives Today from raw.
+            const _liveBypass = (productFilter.mode === 'subset');
+            if (!_liveBypass) try {
                 const goFetchRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_go_fetch_report`, {
                     method: 'POST',
                     headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -2291,8 +2294,10 @@
             } catch(e) { console.warn('[LIVE] go_fetch failed:', e); }
 
             // HOURLY DATA: Fetch hourly metrics for Today and Yesterday
+            // On subset mode, leave hourly arrays empty so the chart falls back to its existing
+            // zero-data state (deferring per-product hourly re-derive to a follow-up iteration).
             DATA.hourlyToday = []; DATA.hourlyYesterday = [];
-            try {
+            if (!_liveBypass) try {
                 const todayIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
                 const todayStr = todayIST.getFullYear() + '-' + String(todayIST.getMonth()+1).padStart(2,'0') + '-' + String(todayIST.getDate()).padStart(2,'0');
                 const yestDate = new Date(todayIST); yestDate.setDate(yestDate.getDate()-1);
