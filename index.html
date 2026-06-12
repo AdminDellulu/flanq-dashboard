@@ -1381,7 +1381,7 @@
                             <div class="search-input-wrap">
                                 <svg class="search-input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                                 <input type="text" id="searchInput" class="search-input" placeholder="Ask anything about Flanq — products, orders, customers, campaigns, insights…" autocomplete="off" spellcheck="false" />
-                                <button id="searchAiBtn" class="search-ai-btn" title="Ask Claude (set ANTHROPIC_API_KEY on Supabase edge function to enable)" disabled>✨ Ask AI</button>
+                                <button id="searchAiBtn" class="search-ai-btn" title="Ask Claude — natural-language analytics over your Flanq data">Ask <svg width="14" height="14" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="display:inline-block;vertical-align:-2px;margin-left:4px;"><path d="M50 4 C53 28 56 37 96 50 C56 63 53 72 50 96 C47 72 44 63 4 50 C44 37 47 28 50 4 Z" fill="#D97757"/></svg></button>
                             </div>
                             <div class="search-hint">
                                 <span><kbd>⌘K</kbd> focus · <kbd>↑↓</kbd> navigate · <kbd>Enter</kbd> open · <kbd>Esc</kbd> clear</span>
@@ -8222,7 +8222,169 @@
         }
     }
 
-    // Wire input + Cmd+K + AI button (Tier 2 scaffold).
+    // ---------- Tier 2 — Ask Claude ----------
+    // Compact summary of the dashboard's loaded data, sent as JSON context to
+    // flanq-ai-search alongside the operator's natural-language question.
+    function _buildAiContext() {
+        const dm = DATA.dailyMetrics || [];
+        if (!dm.length) return { note: 'dashboard data not yet loaded' };
+        const sum = (arr, k) => arr.reduce((a, r) => a + (r[k] || 0), 0);
+        const r2 = (n) => Math.round(n);
+        const last7  = dm.slice(-7);
+        const last30 = dm.slice(-30);
+        const today  = dm[dm.length - 1];
+        const yest   = dm[dm.length - 2];
+
+        const top10 = _productsScored(30).slice(0, 10).map(r => ({
+            name: r.p.name, id: r.p.id, rev_30d: r2(r.rev), qty_30d: r.qty,
+            cost_per_unit: r.p.cost_per_item, gst_pct: r.p.gst_percent,
+        }));
+
+        const cutoff30Str = (() => { const c = new Date(); c.setDate(c.getDate() - 30); return c.toISOString().slice(0, 10); })();
+        const ads30 = (DATA.adSpend || []).filter(a => a.date >= cutoff30Str && a.campaign_name !== 'Meta - Aggregate' && a.campaign_id);
+        const brands = {};
+        for (const a of ads30) {
+            const k = _normalizeProductKey(a.campaign_name);
+            brands[k] = brands[k] || { spend: 0, rev: 0, purchases: 0 };
+            brands[k].spend     += parseFloat(a.spend) || 0;
+            brands[k].rev       += parseFloat(a.purchase_value) || 0;
+            brands[k].purchases += parseInt(a.purchases) || 0;
+        }
+        const topBrands = Object.entries(brands)
+            .map(([k, v]) => ({ brand: k, spend_30d: r2(v.spend), rev_30d: r2(v.rev), roas: v.spend > 0 ? +(v.rev / v.spend).toFixed(2) : 0, purchases: v.purchases }))
+            .sort((a, b) => b.spend_30d - a.spend_30d).slice(0, 12);
+
+        const cutoff30 = new Date(); cutoff30.setDate(cutoff30.getDate() - 30);
+        const allShips = (DATA.shipments?.raw) || [];
+        const ships30 = allShips.filter(s => s.shipped_at && new Date(s.shipped_at) >= cutoff30);
+        const ships30_delivered = ships30.filter(s => s.status === 'delivered').length;
+        const ships30_rto       = ships30.filter(_isRto).length;
+        const ships30_resolved  = ships30_delivered + ships30_rto;
+
+        // Aggregator breakdown last 30d
+        const aggBreak = {};
+        for (const s of ships30) {
+            const k = (s.aggregator || 'unknown').toLowerCase();
+            aggBreak[k] = aggBreak[k] || { total: 0, delivered: 0, rto: 0 };
+            aggBreak[k].total++;
+            if (s.status === 'delivered') aggBreak[k].delivered++;
+            if (_isRto(s)) aggBreak[k].rto++;
+        }
+
+        return {
+            today_date: new Date().toISOString().slice(0, 10),
+            currency: 'INR',
+            product_filter_active: productFilter.mode === 'subset' ? [...productFilter.ids] : null,
+            today:     today ? { d: today.d, rev: r2(today.rev), orders: today.orders, profit: r2(today.profit), margin_pct: +today.margin?.toFixed(1), ad_spend: r2(today.adSpend) } : null,
+            yesterday: yest  ? { d: yest.d,  rev: r2(yest.rev),  orders: yest.orders,  profit: r2(yest.profit),  margin_pct: +yest.margin?.toFixed(1),  ad_spend: r2(yest.adSpend) } : null,
+            last_7d:  { rev: r2(sum(last7,'rev')),  orders: sum(last7,'orders'),  profit: r2(sum(last7,'profit')),  ad_spend: r2(sum(last7,'adSpend')),  cogs: r2(sum(last7,'cogs')),  delivered: sum(last7,'delivered'),  rto: sum(last7,'rto')  },
+            last_30d: { rev: r2(sum(last30,'rev')), orders: sum(last30,'orders'), profit: r2(sum(last30,'profit')), ad_spend: r2(sum(last30,'adSpend')), cogs: r2(sum(last30,'cogs')), delivered: sum(last30,'delivered'), rto: sum(last30,'rto') },
+            top_products_30d: top10,
+            top_brands_by_spend_30d: topBrands,
+            shipping_30d: { total: ships30.length, delivered: ships30_delivered, rto: ships30_rto, resolved: ships30_resolved, by_aggregator: aggBreak },
+            campaign_attribution_30d: DATA.campaignAttributionSummary?.spend30d ? { attributed: r2(DATA.campaignAttributionSummary.spend30d.attributed), unattributed: r2(DATA.campaignAttributionSummary.spend30d.unattributed) } : null,
+        };
+    }
+
+    // Tiny markdown -> HTML for Claude's response. Handles bold/italic/code/lists/headers/paragraphs.
+    function _renderSimpleMarkdown(md) {
+        if (!md) return '';
+        let s = String(md)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/```([\s\S]*?)```/g, (_, c) => `<pre style="background:var(--surface-2);padding:10px 12px;border-radius:6px;overflow-x:auto;font-size:11px;margin:8px 0;">${c}</pre>`)
+            .replace(/`([^`\n]+)`/g, '<code style="background:var(--surface-2);padding:1px 5px;border-radius:3px;font-family:ui-monospace,SFMono-Regular,monospace;font-size:90%;">$1</code>')
+            .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+            .replace(/(?<!\*)\*(?!\*)([^*\n]+)\*/g, '<em>$1</em>')
+            .replace(/^### (.+)$/gm, '<h4 style="margin:14px 0 6px;font-size:14px;color:var(--text-pri);">$1</h4>')
+            .replace(/^## (.+)$/gm, '<h3 style="margin:16px 0 6px;font-size:15px;color:var(--text-pri);">$1</h3>')
+            .replace(/^# (.+)$/gm, '<h2 style="margin:18px 0 8px;font-size:16px;color:var(--text-pri);">$1</h2>');
+        // Lists: group contiguous lines starting with -/•/*
+        s = s.replace(/((?:^[-•*]\s.+\n?)+)/gm, (block) => {
+            const items = block.trim().split(/\n/).map(line => line.replace(/^[-•*]\s+/, '')).map(li => `<li>${li}</li>`).join('');
+            return `<ul style="margin:8px 0;padding-left:22px;line-height:1.55;">${items}</ul>`;
+        });
+        // Numbered lists
+        s = s.replace(/((?:^\d+\.\s.+\n?)+)/gm, (block) => {
+            const items = block.trim().split(/\n/).map(line => line.replace(/^\d+\.\s+/, '')).map(li => `<li>${li}</li>`).join('');
+            return `<ol style="margin:8px 0;padding-left:22px;line-height:1.55;">${items}</ol>`;
+        });
+        // Paragraphs from remaining blank-line-separated chunks
+        const parts = s.split(/\n{2,}/).map(part => {
+            if (part.startsWith('<') || part.trim() === '') return part;
+            return `<p style="margin:8px 0;line-height:1.55;">${part.replace(/\n/g, '<br/>')}</p>`;
+        });
+        return parts.join('');
+    }
+
+    let _aiInflight = false;
+    async function _askClaude() {
+        if (_aiInflight) return;
+        const inputEl = document.getElementById('searchInput');
+        const q = (inputEl?.value || '').trim();
+        if (!q) { inputEl?.focus(); return; }
+        _aiInflight = true;
+        const wrap = document.getElementById('searchResults');
+        const aiBtn = document.getElementById('searchAiBtn');
+        const btnOriginal = aiBtn.innerHTML;
+        aiBtn.disabled = true;
+        aiBtn.innerHTML = 'Thinking…';
+        // Inject a 'thinking' card at the top so the user sees momentum.
+        const thinking = document.createElement('div');
+        thinking.id = 'aiAnswerCard';
+        thinking.className = 'search-answer';
+        thinking.innerHTML = `<div class="search-answer-label" style="display:flex;align-items:center;gap:6px;"><svg width="11" height="11" viewBox="0 0 100 100"><path d="M50 4 C53 28 56 37 96 50 C56 63 53 72 50 96 C47 72 44 63 4 50 C44 37 47 28 50 4 Z" fill="#D97757"/></svg>Claude · thinking</div>
+            <div class="search-answer-headline" style="font-size:18px;line-height:1.3;">${q.replace(/</g,'&lt;')}</div>
+            <div class="search-answer-sub">Reading dashboard context · ${_formatBytes(JSON.stringify(_buildAiContext()).length)}…</div>`;
+        wrap.insertBefore(thinking, wrap.firstChild);
+        try {
+            const ctx = _buildAiContext();
+            const res = await fetch(`${SUPABASE_URL}/functions/v1/flanq-ai-search`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SUPABASE_KEY, 'apikey': SUPABASE_KEY },
+                body: JSON.stringify({ query: q, context: ctx }),
+            });
+            const data = await res.json();
+            const card = document.getElementById('aiAnswerCard');
+            if (!res.ok) {
+                const noKey = res.status === 503;
+                card.innerHTML = `<div class="search-answer-label" style="color:var(--red);">Claude · ${noKey?'not configured':'error'}</div>
+                    <div class="search-answer-headline" style="font-size:16px;">${noKey ? 'Set ANTHROPIC_API_KEY to enable' : 'Couldn’t answer'}</div>
+                    <div class="search-answer-sub">${(data.error || 'unknown').replace(/</g,'&lt;')}</div>
+                    ${noKey ? `<div style="margin-top:14px;font-size:12px;color:var(--text-pri);background:var(--surface);padding:12px;border-radius:8px;border:1px solid var(--border);"><b>Setup (60 seconds):</b><ol style="margin:6px 0 0;padding-left:22px;line-height:1.6;"><li>Get a key from <code>console.anthropic.com</code> → Settings → API Keys</li><li>Supabase dashboard → Project <code>flanq-finance</code> → Edge Functions → Manage secrets</li><li>Add new secret <code>ANTHROPIC_API_KEY</code> = your key</li><li>Reload this page and click Ask Claude again</li></ol></div>` : ''}`;
+            } else {
+                const usage = data.usage || {};
+                const cached = usage.cache_read_input_tokens || 0;
+                const fresh  = usage.input_tokens || 0;
+                const out    = usage.output_tokens || 0;
+                const model  = (data.model || '').replace(/^claude-/, '');
+                card.innerHTML = `<div class="search-answer-label" style="display:flex;align-items:center;gap:6px;color:#D97757;"><svg width="11" height="11" viewBox="0 0 100 100"><path d="M50 4 C53 28 56 37 96 50 C56 63 53 72 50 96 C47 72 44 63 4 50 C44 37 47 28 50 4 Z" fill="#D97757"/></svg>Claude · ${model}</div>
+                    <div class="search-answer-headline" style="font-size:18px;line-height:1.3;margin-bottom:12px;">${q.replace(/</g,'&lt;')}</div>
+                    <div class="search-ai-body" style="color:var(--text-pri);font-size:13.5px;">${_renderSimpleMarkdown(data.answer)}</div>
+                    <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);font-size:10px;color:var(--text-sec);display:flex;justify-content:space-between;">
+                        <span>${fresh.toLocaleString()} fresh + ${cached.toLocaleString()} cached → ${out.toLocaleString()} out tokens</span>
+                        <span>${data.stop_reason || ''}</span>
+                    </div>`;
+            }
+        } catch (e) {
+            console.error('[ai-search]', e);
+            const card = document.getElementById('aiAnswerCard');
+            if (card) card.innerHTML = `<div class="search-answer-label" style="color:var(--red);">Claude · network error</div>
+                <div class="search-answer-headline" style="font-size:16px;">Couldn't reach the edge function</div>
+                <div class="search-answer-sub">${e.message}</div>`;
+        } finally {
+            _aiInflight = false;
+            aiBtn.disabled = false;
+            aiBtn.innerHTML = btnOriginal;
+        }
+    }
+
+    function _formatBytes(n) {
+        if (n < 1024) return n + ' B';
+        if (n < 1024*1024) return (n/1024).toFixed(1) + ' KB';
+        return (n/1024/1024).toFixed(2) + ' MB';
+    }
+
+    // Wire input + Cmd+K + AI button.
     document.addEventListener('DOMContentLoaded', () => {
         const input = document.getElementById('searchInput');
         if (!input) return;
@@ -8237,8 +8399,9 @@
             }
         });
         const aiBtn = document.getElementById('searchAiBtn');
-        if (aiBtn) aiBtn.addEventListener('click', () => {
-            alert("Claude AI mode requires the 'flanq-ai-search' Supabase edge function with an ANTHROPIC_API_KEY env var. Tell SN's Claude Code agent to scaffold + deploy it when you're ready.");
+        if (aiBtn) aiBtn.addEventListener('click', _askClaude);
+        if (input) input.addEventListener('keydown', (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); _askClaude(); }
         });
     });
 
