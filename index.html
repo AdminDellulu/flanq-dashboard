@@ -2056,6 +2056,31 @@
         activity: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>'
     };
 
+    // ==================== PRODUCT FILTER STATE ====================
+    // Global, multi-select product filter applied across every KPI on every tab.
+    // mode='all' = no filter (fast path: read cached daily_metrics).
+    // mode='subset' = ids non-empty (slow path: re-derive from raw order_items + shipments + ad_spend).
+    // See spec/2026-06-11-global-product-filter-design.md for rationale.
+    const PRODUCT_FILTER_LS_KEY = 'flanq.productFilter';
+    const productFilter = {
+        ids: new Set(),
+        get mode() { return this.ids.size === 0 ? 'all' : 'subset'; },
+        set(idsArray) {
+            this.ids = new Set((idsArray || []).map(Number).filter(Number.isFinite));
+            try { localStorage.setItem(PRODUCT_FILTER_LS_KEY, JSON.stringify([...this.ids])); } catch {}
+        },
+        clear() { this.set([]); },
+        hydrateFromStorage() {
+            try {
+                const raw = localStorage.getItem(PRODUCT_FILTER_LS_KEY);
+                if (!raw) return;
+                const arr = JSON.parse(raw);
+                if (Array.isArray(arr)) this.ids = new Set(arr.map(Number).filter(Number.isFinite));
+            } catch {}
+        },
+    };
+    productFilter.hydrateFromStorage();
+
     // ==================== API LAYER ====================
     // Paginated fetch — uses Range header to bypass Supabase server-side row cap (default 1000)
     async function sq(table, params = '') {
