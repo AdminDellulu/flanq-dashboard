@@ -2154,7 +2154,15 @@
         s = s.replace(/^[^A-Za-z0-9]+/, '').replace(/[^A-Za-z0-9 +\-]+$/, '').trim();
         if (!s) return 'Other';
         const lc = s.toLowerCase();
-        return _CANON_BRAND[lc] || s;
+        // Exact canon match (campaign names like "⇪ Strapo | CBO Scaler" -> "strapo" -> "Strapo")
+        if (_CANON_BRAND[lc]) return _CANON_BRAND[lc];
+        // First-word canon match — handles product names that don't have a '|' separator,
+        // e.g. "Pixelion™ Pixel Lantern Mood Light (Rechargeable)" -> firstWord "pixelion" -> "Pixelion".
+        // Without this fall-through, every '|'-less product returned its full name as the brand
+        // key, so campaigns and products never collided in the attribution map.
+        const firstWord = lc.match(/^[a-z0-9+]+/)?.[0];
+        if (firstWord && _CANON_BRAND[firstWord]) return _CANON_BRAND[firstWord];
+        return s;
     }
 
     // Build {productId -> brandKey} + {brandKey -> Set<productId>} at load time.
