@@ -2111,6 +2111,40 @@
         return prev[b.length];
     }
 
+    // Build a campaign_id -> product_id|null map by matching campaign_name against product aliases.
+    // Strict substring first; Levenshtein <= 2 fuzzy fallback per-word.
+    // Ambiguous campaigns (name contains aliases of 2+ products): first match wins, warn to console.
+    // Output: { map: {[campaign_id]: product_id|null}, summary: {total, matched, unmatched, warnings} }
+    function buildCampaignProductMap(campaigns, products) {
+        if (!campaigns || !products) return { map: {}, summary: { total: 0, matched: 0, unmatched: 0, warnings: [] } };
+        const aliases = products.map(p => ({ id: p.id, name: p.name, keys: extractAliasTokens(p.name) }));
+        const map = {};
+        const warnings = [];
+        let matched = 0;
+        for (const c of campaigns) {
+            const lower = (c.campaign_name || c.name || '').toLowerCase();
+            if (!lower) { map[c.id] = null; continue; }
+            const strictHits = aliases.filter(a => a.keys.some(k => lower.includes(k)));
+            let chosen = strictHits[0] || null;
+            if (strictHits.length > 1) {
+                warnings.push({ campaign_id: c.id, campaign_name: lower, candidates: strictHits.map(a => a.name) });
+            }
+            if (!chosen) {
+                const words = lower.split(/[^a-z0-9]+/).filter(w => w.length >= 4);
+                for (const a of aliases) {
+                    if (a.keys.some(k => words.some(w => levenshtein(w, k) <= 2))) {
+                        chosen = a;
+                        break;
+                    }
+                }
+            }
+            map[c.id] = chosen ? chosen.id : null;
+            if (chosen) matched++;
+        }
+        if (warnings.length) console.warn('[ATTR] ambiguous campaigns (first-match used):', warnings);
+        return { map, summary: { total: campaigns.length, matched, unmatched: campaigns.length - matched, warnings } };
+    }
+
     // ==================== API LAYER ====================
     // Paginated fetch — uses Range header to bypass Supabase server-side row cap (default 1000)
     async function sq(table, params = '') {
@@ -2180,6 +2214,25 @@
 
             DATA.products = products;
             DATA.research = research;
+            // Campaign -> product attribution map (built once after products + campaigns are loaded).
+            // Used by ad-spend filter when productFilter.mode === 'subset'. See spec section 4c.
+            const _attr = buildCampaignProductMap(adCampaigns, products);
+            DATA.campaignToProduct = _attr.map;
+            DATA.campaignAttributionSummary = _attr.summary;
+            const _attrSpend30d = (adSpend || [])
+                .filter(s => {
+                    const d = new Date(s.date);
+                    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 30);
+                    return d >= cutoff;
+                })
+                .reduce((acc, s) => {
+                    const pid = DATA.campaignToProduct[s.campaign_id];
+                    const v = parseFloat(s.spend) || 0;
+                    if (pid) acc.attributed += v; else acc.unattributed += v;
+                    return acc;
+                }, { attributed: 0, unattributed: 0 });
+            DATA.campaignAttributionSummary.spend30d = _attrSpend30d;
+            console.log(`[ATTR] ${_attr.summary.matched}/${_attr.summary.total} campaigns mapped · ₹${Math.round(_attrSpend30d.attributed).toLocaleString('en-IN')} attributable / ₹${Math.round(_attrSpend30d.unattributed).toLocaleString('en-IN')} unattributable (30d)`);
 
             // LIVE TODAY: Fetch real-time "today" data from go_fetch RPC and inject/replace in dailyMetrics
             try {
