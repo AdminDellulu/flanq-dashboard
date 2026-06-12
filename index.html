@@ -1230,6 +1230,11 @@
                 </div>
             </div>
 
+            <div id="productFilterBanner" style="display:none;padding:8px 16px;background:rgba(255,180,30,.10);border-bottom:1px solid rgba(255,180,30,.30);font-size:12px;color:var(--text-pri);">
+                <span id="productFilterBannerMsg"></span>
+                <a id="productFilterBannerClear" style="color:var(--purple);cursor:pointer;margin-left:8px;">[clear]</a>
+            </div>
+
             <div class="content">
                 <div class="tabs">
                     <button class="tab-button active" data-tab="overview">Key Insights</button>
@@ -7479,7 +7484,140 @@
         const activeTab = document.querySelector('.nav-item.active');
         renderTab(activeTab ? activeTab.dataset.tab : 'overview');
         syncDWMToggles();
+        if (typeof _renderActiveFilterBanner === 'function') _renderActiveFilterBanner();
     });
+
+    // ──────────── Product Filter UI ────────────
+    function _productsSortedByRev30d() {
+        const products = DATA.products || [];
+        const items = DATA.orderItems || [];
+        const orderById = new Map((DATA.orders?.raw || []).map(o => [Number(o.id), o]));
+        const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 30);
+        const revByProd = new Map();
+        const qtyByProd = new Map();
+        for (const it of items) {
+            const ord = orderById.get(Number(it.order_id));
+            if (!ord || !ord.order_date) continue;
+            if (new Date(ord.order_date) < cutoff) continue;
+            const pid = Number(it.product_id);
+            revByProd.set(pid, (revByProd.get(pid) || 0) + (parseFloat(it.line_total) || 0));
+            qtyByProd.set(pid, (qtyByProd.get(pid) || 0) + (parseInt(it.quantity) || 0));
+        }
+        return products
+            .map(p => ({ p, rev: revByProd.get(p.id) || 0, qty: qtyByProd.get(p.id) || 0 }))
+            .sort((a, b) => (b.rev - a.rev) || a.p.name.localeCompare(b.p.name));
+    }
+    function _renderProductFilterChipLabel() {
+        const label = document.getElementById('productFilterChipLabel');
+        if (!label) return;
+        if (productFilter.mode === 'all') { label.textContent = 'All Products'; return; }
+        const names = (DATA.products || [])
+            .filter(p => productFilter.ids.has(Number(p.id)))
+            .map(p => p.name.replace(/[™®©]/g, '').trim().split(' ')[0]);
+        const head = names.slice(0, 2).join(', ');
+        const tail = names.length > 2 ? ` +${names.length - 2}` : '';
+        label.textContent = `${head}${tail}` || `${productFilter.ids.size} products`;
+    }
+    function _renderActiveFilterBanner() {
+        const banner = document.getElementById('productFilterBanner');
+        const msg = document.getElementById('productFilterBannerMsg');
+        if (!banner || !msg) return;
+        if (productFilter.mode === 'all') { banner.style.display = 'none'; return; }
+        const dur = document.getElementById('durationSelect').value;
+        const unattr = (DATA.ad_spend || DATA.adSpend || [])
+            .filter(s => {
+                const w = (dur === 'all') ? null : _dateWindow(dur);
+                if (w && !_inWindow(s.date, w)) return false;
+                const pid = DATA.campaignToProduct ? DATA.campaignToProduct[s.campaign_id] : null;
+                return pid == null;
+            })
+            .reduce((a, s) => a + (parseFloat(s.spend) || 0), 0);
+        const ru = '₹' + Math.round(unattr).toLocaleString('en-IN');
+        msg.textContent = `Filtered to ${productFilter.ids.size} product${productFilter.ids.size === 1 ? '' : 's'} · ${ru} of ad spend unattributable to any product (${dur})`;
+        banner.style.display = 'block';
+    }
+    let _draftFilterIds = null;
+    function _renderProductFilterList() {
+        const wrap = document.getElementById('productFilterList');
+        const search = (document.getElementById('productFilterSearch')?.value || '').toLowerCase().trim();
+        const fmt = (n) => '₹' + Math.round(n).toLocaleString('en-IN');
+        const rows = _productsSortedByRev30d()
+            .filter(({ p }) => !search || p.name.toLowerCase().includes(search))
+            .map(({ p, rev, qty }) => {
+                const checked = _draftFilterIds.has(Number(p.id)) ? 'checked' : '';
+                return `<label style="display:flex;align-items:center;gap:8px;padding:7px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:12px;">
+                    <input type="checkbox" data-pid="${p.id}" ${checked} style="margin:0;" />
+                    <span style="flex:1;">${p.name}</span>
+                    <span style="color:var(--text-sec);font-size:11px;white-space:nowrap;">${fmt(rev)} · ${qty}</span>
+                </label>`;
+            }).join('');
+        wrap.innerHTML = rows || `<div style="padding:24px 12px;text-align:center;color:var(--text-sec);font-size:11px;">No products match.</div>`;
+        document.getElementById('productFilterCount').textContent = `${_draftFilterIds.size} selected`;
+        wrap.querySelectorAll('input[type=checkbox]').forEach(cb => {
+            cb.addEventListener('change', (e) => {
+                const pid = Number(e.target.dataset.pid);
+                if (e.target.checked) _draftFilterIds.add(pid); else _draftFilterIds.delete(pid);
+                document.getElementById('productFilterCount').textContent = `${_draftFilterIds.size} selected`;
+            });
+        });
+    }
+    function _openProductFilter() {
+        _draftFilterIds = new Set(productFilter.ids);
+        _renderProductFilterList();
+        document.getElementById('productFilterDropdown').style.display = 'block';
+        document.getElementById('productFilterSearch').focus();
+    }
+    function _closeProductFilter() {
+        document.getElementById('productFilterDropdown').style.display = 'none';
+        _draftFilterIds = null;
+    }
+    function _applyProductFilter() {
+        productFilter.set([..._draftFilterIds]);
+        _invalidateFilterCaches();
+        _resetDerivedCache();
+        _renderProductFilterChipLabel();
+        _renderActiveFilterBanner();
+        _closeProductFilter();
+        const activeTab = document.querySelector('.nav-item.active');
+        renderTab(activeTab ? activeTab.dataset.tab : 'overview');
+    }
+    document.getElementById('productFilterChip').addEventListener('click', (e) => {
+        e.stopPropagation();
+        const open = document.getElementById('productFilterDropdown').style.display === 'block';
+        if (open) _closeProductFilter(); else _openProductFilter();
+    });
+    document.getElementById('productFilterSearch').addEventListener('input', _renderProductFilterList);
+    document.getElementById('productFilterSelectAll').addEventListener('click', (e) => {
+        e.preventDefault();
+        (DATA.products || []).forEach(p => _draftFilterIds.add(Number(p.id)));
+        _renderProductFilterList();
+    });
+    document.getElementById('productFilterClear').addEventListener('click', (e) => {
+        e.preventDefault();
+        _draftFilterIds.clear();
+        _renderProductFilterList();
+    });
+    document.getElementById('productFilterApply').addEventListener('click', _applyProductFilter);
+    document.getElementById('productFilterCancel').addEventListener('click', _closeProductFilter);
+    document.getElementById('productFilterBannerClear').addEventListener('click', () => {
+        productFilter.clear();
+        _invalidateFilterCaches(); _resetDerivedCache();
+        _renderProductFilterChipLabel();
+        _renderActiveFilterBanner();
+        const activeTab = document.querySelector('.nav-item.active');
+        renderTab(activeTab ? activeTab.dataset.tab : 'overview');
+    });
+    document.addEventListener('click', (e) => {
+        const dd = document.getElementById('productFilterDropdown');
+        const chip = document.getElementById('productFilterChip');
+        if (dd && dd.style.display === 'block' && !dd.contains(e.target) && !chip.contains(e.target)) _closeProductFilter();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && document.getElementById('productFilterDropdown')?.style.display === 'block') _closeProductFilter();
+    });
+    _renderProductFilterChipLabel();
+    _renderActiveFilterBanner();
+
     // Custom date pickers re-render on change
     ['customStart','customEnd'].forEach(id => {
         const el = document.getElementById(id);
