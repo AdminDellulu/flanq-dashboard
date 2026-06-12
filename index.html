@@ -7596,48 +7596,120 @@
         });
     }
 
+    // ---------- Query parser (time + entity + metric) ----------
+    // Decomposes "which product has best roas in last 1 week" into:
+    //   { timeRange: {days:7, label:'Last 7 days'}, entity:'product', metric:'roas', verb:'best' }
+    // The router then picks an intent and passes the parsed pieces in, so the answer card
+    // can echo the user's actual question (no more "ALL TIME" when they said "last week").
+
+    function _parseTimeRange(q) {
+        const s = q.toLowerCase();
+        if (/^today\b|\btoday\b/.test(s) && !/yesterday/.test(s))   return { days: 1, anchor: 'today',     label: 'Today' };
+        if (/^yesterday\b|\byesterday\b/.test(s))                   return { days: 1, anchor: 'yesterday', label: 'Yesterday' };
+        let m = s.match(/\b(?:last|past)\s+(\d+)\s*(day|week|month)s?\b/);
+        if (m) {
+            const n = parseInt(m[1], 10);
+            const mult = m[2] === 'week' ? 7 : m[2] === 'month' ? 30 : 1;
+            const days = n * mult;
+            return { days, label: `Last ${days} day${days===1?'':'s'}` };
+        }
+        m = s.match(/\b(?:last|past|this)\s+(week|month|quarter|year)\b/);
+        if (m) {
+            const days = m[1] === 'week' ? 7 : m[1] === 'month' ? 30 : m[1] === 'quarter' ? 90 : 365;
+            return { days, label: `Last ${days} days` };
+        }
+        m = s.match(/\b(\d+)\s*d(?:ays?)?\b/);  // "30d", "7 days"
+        if (m) { const d = parseInt(m[1], 10); return { days: d, label: `Last ${d} days` }; }
+        if (/\b(all\s*time|lifetime|ever)\b/.test(s)) return { days: null, label: 'All time' };
+        return null;  // unspecified — caller picks a default
+    }
+
+    function _parseBrand(q) {
+        const lc = q.toLowerCase();
+        // Match against canon brand keys first (most reliable).
+        for (const [k, v] of Object.entries(_CANON_BRAND)) {
+            if (new RegExp(`\\b${k.replace(/[.+]/g, '\\$&')}\\b`, 'i').test(lc)) return v;
+        }
+        return null;
+    }
+
+    function _parseMetric(q) {
+        const lc = q.toLowerCase();
+        if (/\broas\b|return on (ad )?spend/.test(lc))               return 'roas';
+        if (/\brto\b|return to origin/.test(lc))                     return 'rto';
+        if (/\b(profit|margin|earn(ed|ings)?|net)\b/.test(lc))       return 'profit';
+        if (/\b(revenue|sales|sold|gmv|turnover)\b/.test(lc))        return 'revenue';
+        if (/\b(orders?|sales count|transactions?)\b/.test(lc))      return 'orders';
+        if (/\b(cogs|cost of goods)\b/.test(lc))                     return 'cogs';
+        if (/\b(spend|ad spend|cac|cpa|cpc)\b/.test(lc))             return 'spend';
+        if (/\b(cash|collected|remittance)\b/.test(lc))              return 'cash';
+        return null;
+    }
+
     // ---------- Intent recognizers ----------
     const SEARCH_INTENTS = [
-        { re: /\btop\s+(selling\s+)?(products?|skus?|items?)\b/i, run: _intentTopProducts },
-        { re: /\bbest\s+(roas|performing)\b|\btop\s+(campaigns?|roas)\b/i,           run: _intentBestRoas },
-        { re: /^today('?s)?(\s+(metrics?|stats?|numbers?|revenue|orders?|profit))?$/i, run: () => _intentDay(0) },
-        { re: /^yesterday('?s)?(\s+(metrics?|stats?|numbers?))?$/i,                   run: () => _intentDay(1) },
-        { re: /\b(this\s+week|7\s*d(ays?)?|last\s+7)\b/i,                              run: () => _intentRange(7) },
-        { re: /\b(this\s+month|30\s*d(ays?)?|last\s+30)\b/i,                           run: () => _intentRange(30) },
-        { re: /\b(high\s+rto|rto\s+(rate|orders?)|cod\s+rto)\b/i,                      run: _intentHighRto },
-        { re: /\b(recent|latest|new)\s+(orders?|shipments?)\b/i,                       run: _intentRecent },
-        { re: /\b(cancel(l)?ed|void(ed)?)\s+orders?\b/i,                               run: _intentCancelled },
-        { re: /\b(cod|prepaid)\s+(cash|collected|revenue)\b|\bcash\s+(collected|position)\b/i, run: _intentCash },
+        { re: /\b(top|best)\s+(selling\s+)?(products?|skus?|items?)\b/i,                run: (q, ctx) => _intentTopProducts(ctx) },
+        { re: /\b(best|top|highest)\s+(roas|performing|performer)\b|\btop\s+(campaigns?|brands?)\b/i, run: (q, ctx) => _intentBestRoas(ctx) },
+        { re: /\b(high|worst|highest)\s+(rto|return)\b|\b(rto|return)\s+(rate|orders?)\b|\bcod\s+rto\b/i, run: (q, ctx) => _intentHighRto(ctx) },
+        { re: /\b(recent|latest|new)\s+(orders?|shipments?)\b/i,                          run: (q, ctx) => _intentRecent(ctx) },
+        { re: /\b(cancel(l)?ed|void(ed)?|refund(ed)?)\s+orders?\b/i,                       run: (q, ctx) => _intentCancelled(ctx) },
+        { re: /\b(cod|prepaid)\s+(cash|collected|revenue)\b|\bcash\s+(collected|position|flow)\b/i, run: (q, ctx) => _intentCash(ctx) },
+        // Single-day intents (no other modifiers needed).
+        { re: /^today('?s)?(\s+(metrics?|stats?|numbers?|revenue|orders?|profit))?$/i,    run: () => _intentDay(0) },
+        { re: /^yesterday('?s)?(\s+(metrics?|stats?|numbers?))?$/i,                       run: () => _intentDay(1) },
+        // [brand] [metric] — "Strapo revenue", "Pixelion profit", catches at the end so the
+        // more-specific intents above win first.
+        { re: /./, run: (q, ctx) => (ctx.brand && ctx.metric) ? _intentBrandMetric(ctx) : null, guard: (q, ctx) => ctx.brand && ctx.metric },
     ];
 
-    function _intentTopProducts() {
-        const rows = _productsScored(30);
+    function _intentTopProducts(ctx) {
+        const days = ctx?.timeRange?.days ?? 30;
+        const label = ctx?.timeRange?.label || `Last ${days} days`;
+        const rows = _productsScored(days);
         const top = rows.slice(0, 10);
-        const total30 = rows.reduce((a, r) => a + r.rev, 0);
+        const total = rows.reduce((a, r) => a + r.rev, 0);
         const top3 = top.slice(0, 3).reduce((a, r) => a + r.rev, 0);
         const maxRev = Math.max(...top.map(r => r.rev), 1);
         const bars = top.map(r => `<div class="search-answer-mini-bar" title="${r.p.name}: ${_fmtRk(r.rev)}" style="height:${Math.max(4, r.rev/maxRev*50)}px;"></div>`).join('');
         return {
-            label: 'Top products · last 30 days',
-            headline: top[0]?.p?.name?.split(' ').slice(0,3).join(' ') || 'No data',
-            sub: top[0] ? `leads with ${_fmtRk(top[0].rev)} of revenue (${(top[0].rev/Math.max(total30,1)*100).toFixed(1)}% of brand)` : '',
-            grid: [
-                { label: '30d revenue', value: _fmtRk(total30) },
-                { label: 'Top 3 share', value: ((top3/Math.max(total30,1))*100).toFixed(0) + '%' },
-                { label: 'Tracked SKUs', value: rows.filter(r => r.qty > 0).length },
-            ],
-            mini: bars,
+            label: `Top products · ${label.toLowerCase()}`,
+            headline: top[0]?.p?.name?.split(' ').slice(0,3).join(' ') || 'No data in window',
+            sub: top[0] ? `leads with ${_fmtRk(top[0].rev)} (${(top[0].rev/Math.max(total,1)*100).toFixed(1)}% of brand revenue this window)` : 'Try widening the window — none of your products have orders in this range.',
+            grid: top[0] ? [
+                { label: `${label} revenue`, value: _fmtRk(total) },
+                { label: 'Top 3 share', value: ((top3/Math.max(total,1))*100).toFixed(0) + '%' },
+                { label: 'Active SKUs', value: rows.filter(r => r.qty > 0).length },
+            ] : null,
+            mini: top[0] ? bars : null,
             list: top.map(r => ({
                 icon: '📦',
                 title: r.p.name,
                 meta: `pid ${r.p.id} · COGS ${_fmtR(r.p.cost_per_item||0)}/unit`,
                 stats: [['Revenue', _fmtRk(r.rev)], ['Qty', String(r.qty)]],
+                _payload: { type: 'product', id: r.p.id },
             })),
+            replacesEntityList: 'products',
         };
     }
 
-    function _intentBestRoas() {
-        const ads = (DATA.adSpend || []).filter(a => a.campaign_id && a.campaign_name !== 'Meta - Aggregate');
+    function _intentBestRoas(ctx) {
+        const days = ctx?.timeRange?.days ?? null;
+        const wantsProduct = ctx && (ctx.entity === 'product' || /product/.test(ctx.rawQuery || ''));
+        const label = days ? (ctx.timeRange.label || `Last ${days} days`) : 'All time';
+        // Filter ad_spend to time window (and exclude Meta - Aggregate).
+        let ads = (DATA.adSpend || []).filter(a => a.campaign_id && a.campaign_name !== 'Meta - Aggregate');
+        if (days) {
+            const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - days);
+            const cutoffStr = cutoff.toISOString().slice(0, 10);
+            ads = ads.filter(a => a.date >= cutoffStr);
+        }
+        if (!ads.length) {
+            return {
+                label: `Best ROAS · ${label.toLowerCase()}`,
+                headline: 'No ad spend in window',
+                sub: days ? `No ad spend recorded in the last ${days} day${days===1?'':'s'}. Try a wider window.` : '',
+            };
+        }
         const byBrand = {};
         for (const a of ads) {
             const key = _normalizeProductKey(a.campaign_name);
@@ -7646,21 +7718,120 @@
             byBrand[key].rev += parseFloat(a.purchase_value) || 0;
             byBrand[key].purchases += parseInt(a.purchases) || 0;
         }
+        const minSpend = days ? Math.max(50, days * 20) : 100; // scale floor with window so 7d isn't dominated by Rs5 noise
         const list = Object.values(byBrand)
-            .filter(b => b.spend > 100)
+            .filter(b => b.spend > minSpend && b.purchases > 0)
             .map(b => ({ ...b, roas: b.spend > 0 ? b.rev / b.spend : 0 }))
             .sort((a, b) => b.roas - a.roas)
             .slice(0, 10);
+        if (!list.length) {
+            return {
+                label: `Best ROAS · ${label.toLowerCase()}`,
+                headline: 'No campaigns with purchases in window',
+                sub: `Tracked Rs${Math.round([...Object.values(byBrand)].reduce((a,b)=>a+b.spend,0)).toLocaleString('en-IN')} of spend but no attributed purchases.`,
+            };
+        }
+        // Compute total spend + revenue for the period — context for the headline.
+        const totalSpend = ads.reduce((a, r) => a + (parseFloat(r.spend) || 0), 0);
+        const totalRev = ads.reduce((a, r) => a + (parseFloat(r.purchase_value) || 0), 0);
+        const blendedRoas = totalSpend > 0 ? totalRev / totalSpend : 0;
+        const noun = wantsProduct ? 'product brand' : 'brand';
         return {
-            label: 'Best ROAS · all time',
-            headline: list[0] ? list[0].key + ' · ' + list[0].roas.toFixed(2) + 'x' : 'No data',
-            sub: list[0] ? `${_fmtRk(list[0].rev)} revenue on ${_fmtRk(list[0].spend)} spend` : '',
+            label: `Best ROAS by ${noun} · ${label.toLowerCase()}`,
+            headline: list[0].key + ' · ' + list[0].roas.toFixed(2) + 'x',
+            sub: `${_fmtRk(list[0].rev)} revenue on ${_fmtRk(list[0].spend)} spend · ${list[0].purchases} purchases. Blended ROAS this window: ${blendedRoas.toFixed(2)}x.`,
+            grid: [
+                { label: `${label} spend`, value: _fmtRk(totalSpend) },
+                { label: `${label} ad rev`, value: _fmtRk(totalRev) },
+                { label: 'Top brand share', value: ((list[0].spend/Math.max(totalSpend,1))*100).toFixed(0) + '%' },
+            ],
             list: list.map(b => ({
                 icon: '🎯',
                 title: b.key,
                 meta: `${b.purchases} purchases`,
                 stats: [['Spend', _fmtRk(b.spend)], ['Revenue', _fmtRk(b.rev)], ['ROAS', `<b style="color:${b.roas>=3?'var(--green)':b.roas>=2?'var(--amber)':'var(--red)'}">${b.roas.toFixed(2)}x</b>`]],
+                _payload: { type: 'campaign', name: b.key },
             })),
+            replacesEntityList: 'campaigns',
+        };
+    }
+
+    // [brand] [metric] — e.g. "Strapo revenue this week", "Pixelion profit".
+    function _intentBrandMetric(ctx) {
+        const days = ctx.timeRange?.days ?? 30;
+        const label = ctx.timeRange?.label || `Last ${days} days`;
+        const brandKey = ctx.brand;  // canon brand name e.g. "Strapo"
+        const metric = ctx.metric;   // 'revenue' | 'profit' | 'roas' | 'rto' | 'orders' | 'spend' | 'cash' | 'cogs'
+
+        // Find all product IDs in this brand group.
+        const productIds = [];
+        for (const [pid, key] of Object.entries(DATA.productBrandKey || {})) {
+            if (key === brandKey) productIds.push(Number(pid));
+        }
+        if (!productIds.length && metric !== 'roas' && metric !== 'spend') {
+            return { label: `${brandKey} · ${label.toLowerCase()}`, headline: 'No products in brand', sub: 'Add the SKU to the products table to track per-brand KPIs.' };
+        }
+        const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - days);
+        const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+        // Order-derived metrics (revenue, orders, cogs, profit).
+        const orderById = new Map((DATA.orders?.raw || []).map(o => [Number(o.id), o]));
+        let rev = 0, orders = new Set(), cogs = 0;
+        for (const it of (DATA.orderItems || [])) {
+            if (!productIds.includes(Number(it.product_id))) continue;
+            const o = orderById.get(Number(it.order_id));
+            if (!o || !o.order_date || new Date(o.order_date) < cutoff) continue;
+            rev += parseFloat(it.line_total) || 0;
+            cogs += (parseFloat(it.cogs) || 0) * (parseInt(it.quantity) || 1);
+            orders.add(o.id);
+        }
+        // Ad spend / ROAS for this brand.
+        let spend = 0, adRev = 0, purchases = 0;
+        for (const a of (DATA.adSpend || [])) {
+            if (a.campaign_name === 'Meta - Aggregate' || !a.campaign_id) continue;
+            if (_normalizeProductKey(a.campaign_name) !== brandKey) continue;
+            if (days && a.date < cutoffStr) continue;
+            spend += parseFloat(a.spend) || 0;
+            adRev += parseFloat(a.purchase_value) || 0;
+            purchases += parseInt(a.purchases) || 0;
+        }
+        // Shipments / RTO for this brand.
+        const orderIdSet = orders;
+        let delivered = 0, rto = 0;
+        for (const s of ((DATA.shipments?.raw) || [])) {
+            if (!orderIdSet.has(Number(s.order_id))) continue;
+            if (s.status === 'delivered') delivered++;
+            if (_isRto(s)) rto++;
+        }
+        const rtoRate = _canonicalRtoRate(delivered, rto);
+        const profit = rev - cogs - spend; // approximation; full formula honors shipping etc. but this is a brand view
+
+        const headline = (() => {
+            switch (metric) {
+                case 'revenue': return `${_fmtRk(rev)} revenue`;
+                case 'orders':  return `${orders.size} orders`;
+                case 'profit':  return `${_fmtRk(profit)} contribution`;
+                case 'spend':   return `${_fmtRk(spend)} ad spend`;
+                case 'roas':    return spend > 0 ? `${(adRev/spend).toFixed(2)}x ROAS` : 'No ad spend';
+                case 'rto':     return `${rtoRate.toFixed(1)}% RTO rate`;
+                case 'cogs':    return `${_fmtRk(cogs)} COGS`;
+                default:        return `${_fmtRk(rev)} revenue`;
+            }
+        })();
+        return {
+            label: `${brandKey} · ${label.toLowerCase()}`,
+            headline,
+            sub: `${orders.size} orders · ${_fmtRk(rev)} revenue · ${_fmtRk(spend)} ad spend · ${delivered + rto} resolved shipments`,
+            grid: [
+                { label: 'Revenue',       value: _fmtRk(rev) },
+                { label: 'Orders',        value: orders.size },
+                { label: 'COGS',          value: _fmtRk(cogs) },
+                { label: 'Ad spend',      value: _fmtRk(spend) },
+                { label: 'ROAS',          value: spend > 0 ? (adRev/spend).toFixed(2) + 'x' : '—' },
+                { label: 'AOV',           value: orders.size > 0 ? _fmtR(rev/orders.size) : '—' },
+                { label: 'Delivered',     value: delivered },
+                { label: 'RTO rate',      value: rtoRate > 0 ? `${rtoRate.toFixed(1)}%` : '—' },
+            ],
         };
     }
 
@@ -7716,8 +7887,14 @@
         };
     }
 
-    function _intentHighRto() {
-        const ships = (DATA.shipments?.raw) || [];
+    function _intentHighRto(ctx) {
+        const days = ctx?.timeRange?.days ?? null;
+        const label = days ? (ctx.timeRange.label || `Last ${days} days`) : 'All time';
+        const cutoff = days ? new Date(Date.now() - days*86400000) : null;
+        const allShips = (DATA.shipments?.raw) || [];
+        const ships = cutoff
+            ? allShips.filter(s => (s.delivered_at && new Date(s.delivered_at) >= cutoff) || (s.rto_initiated_at && new Date(s.rto_initiated_at) >= cutoff))
+            : allShips;
         const rto = ships.filter(_isRto);
         const delivered = ships.filter(s => s.status === 'delivered');
         const rtoRate = _canonicalRtoRate(delivered.length, rto.length);
@@ -7736,9 +7913,9 @@
             stats: [['RTO Rate', `<b style="color:${_canonicalRtoRate(v.delivered,v.rto)>15?'var(--red)':'var(--text-pri)'}">${_canonicalRtoRate(v.delivered, v.rto).toFixed(1)}%</b>`]],
         }));
         return {
-            label: 'RTO snapshot · all time',
+            label: `RTO snapshot · ${label.toLowerCase()}`,
             headline: `${_fmtPct(rtoRate)} blended RTO`,
-            sub: `${rto.length.toLocaleString('en-IN')} RTOs / ${(delivered.length+rto.length).toLocaleString('en-IN')} resolved shipments`,
+            sub: `${rto.length.toLocaleString('en-IN')} RTOs / ${(delivered.length+rto.length).toLocaleString('en-IN')} resolved shipments${days?'':' (lifetime)'}`,
             grid: [
                 { label: 'RTO count', value: rto.length },
                 { label: 'Delivered', value: delivered.length },
@@ -7748,7 +7925,7 @@
         };
     }
 
-    function _intentRecent() {
+    function _intentRecent(ctx) {
         const ships = ((DATA.shipments?.raw) || []).filter(s => s.shipped_at).sort((a, b) => (b.shipped_at || '').localeCompare(a.shipped_at || ''));
         const orderById = new Map((DATA.orders?.raw || []).map(o => [Number(o.id), o]));
         const list = ships.slice(0, 12).map(s => {
@@ -7763,8 +7940,11 @@
         return { label: 'Recent shipments', headline: `${list.length} most recent shipments`, list };
     }
 
-    function _intentCancelled() {
-        const orders = (DATA.orders?.raw || []).filter(o => o.financial_status === 'voided' || o.financial_status === 'refunded' || o.fulfillment_status === 'restocked');
+    function _intentCancelled(ctx) {
+        const days = ctx?.timeRange?.days ?? null;
+        const cutoff = days ? new Date(Date.now() - days*86400000) : null;
+        let orders = (DATA.orders?.raw || []).filter(o => o.financial_status === 'voided' || o.financial_status === 'refunded' || o.fulfillment_status === 'restocked');
+        if (cutoff) orders = orders.filter(o => o.order_date && new Date(o.order_date) >= cutoff);
         const total = orders.reduce((a, o) => a + (parseFloat(o.total) || 0), 0);
         return {
             label: 'Cancelled / refunded / restocked orders',
@@ -7785,13 +7965,15 @@
         };
     }
 
-    function _intentCash() {
-        const dm30 = (DATA.dailyMetrics || []).slice(-30);
-        const cashPrepaid = dm30.reduce((a, d) => a + (d.cashPrepaid || 0), 0);
-        const cashCOD = dm30.reduce((a, d) => a + (d.cashCOD || 0), 0);
-        const rev = dm30.reduce((a, d) => a + (d.rev || 0), 0);
+    function _intentCash(ctx) {
+        const days = ctx?.timeRange?.days ?? 30;
+        const label = ctx?.timeRange?.label || `Last ${days} days`;
+        const dm = (DATA.dailyMetrics || []).slice(-days);
+        const cashPrepaid = dm.reduce((a, d) => a + (d.cashPrepaid || 0), 0);
+        const cashCOD = dm.reduce((a, d) => a + (d.cashCOD || 0), 0);
+        const rev = dm.reduce((a, d) => a + (d.rev || 0), 0);
         return {
-            label: 'Cash collected · last 30 days',
+            label: `Cash collected · ${label.toLowerCase()}`,
             headline: `${_fmtRk(cashPrepaid + cashCOD)} collected`,
             sub: `${_fmtRk(rev)} billed (${(((cashPrepaid+cashCOD)/Math.max(rev,1))*100).toFixed(0)}% collection rate)`,
             grid: [
@@ -7927,26 +8109,53 @@
         clearTimeout(_searchT);
         _searchT = setTimeout(() => {
             const t0 = performance.now();
-            // 1. Intent first.
-            let answer = null;
+            // Decompose query into structured context (so intents can honor "last week" etc).
+            const ctx = {
+                rawQuery: q,
+                timeRange: _parseTimeRange(q),
+                brand: _parseBrand(q),
+                metric: _parseMetric(q),
+                entity: /products?\b|skus?\b/i.test(q) ? 'product'
+                      : /campaigns?\b/i.test(q)         ? 'campaign'
+                      : /orders?\b/i.test(q)            ? 'order'
+                      : /customers?\b|buyers?\b/i.test(q) ? 'customer'
+                      : null,
+            };
+            // Match against intents in order; the last intent is a brand+metric catch-all.
+            let answer = null, hitIntent = null;
             for (const intent of SEARCH_INTENTS) {
-                if (intent.re.test(q)) { try { answer = intent.run(q); } catch(e) { console.warn('[search] intent failed', e); } break; }
+                if (intent.guard && !intent.guard(q, ctx)) continue;
+                if (intent.re.test(q)) {
+                    try { answer = intent.run(q, ctx); } catch(e) { console.warn('[search] intent failed', e); }
+                    if (answer) { hitIntent = intent; break; }
+                }
             }
-            // 2. Entity searches always run alongside (so user sees product matches even if intent fires).
+            // Entity searches alongside (so a user typing "strapo" still sees matches even after the intent).
             const products  = _searchProducts(q);
             const orders    = _searchOrders(q);
             const customers = _searchCustomers(q);
             const campaigns = _searchCampaigns(q);
+            // De-dupe: if the answer already shows the entity list, suppress its trailing section.
+            const skip = answer?.replacesEntityList;
+            const payload = {
+                answer,
+                ctx,
+                products:  skip === 'products'  ? [] : products,
+                orders:    skip === 'orders'    ? [] : orders,
+                customers: skip === 'customers' ? [] : customers,
+                campaigns: skip === 'campaigns' ? [] : campaigns,
+            };
             const t1 = performance.now();
-            document.getElementById('searchStats').textContent = `${(answer?1:0) + products.length + orders.length + customers.length + campaigns.length} results · ${(t1-t0).toFixed(0)}ms`;
-            _renderSearchResults({ answer, products, orders, customers, campaigns });
+            const total = (answer?1:0) + payload.products.length + payload.orders.length + payload.customers.length + payload.campaigns.length;
+            document.getElementById('searchStats').textContent = `${total} result${total===1?'':'s'} · ${(t1-t0).toFixed(0)}ms${ctx.timeRange ? ' · ' + ctx.timeRange.label : ''}${ctx.brand ? ' · ' + ctx.brand : ''}${ctx.metric ? ' · ' + ctx.metric : ''}`;
+            _renderSearchResults(payload);
         }, 90);
     }
 
     function _renderSearchResults(payload) {
         const wrap = document.getElementById('searchResults');
         if (!payload) { wrap.innerHTML = ''; document.getElementById('searchStats').textContent = ''; return; }
-        const { answer, products, orders, customers, campaigns } = payload;
+        const { answer, products, orders, customers, campaigns, ctx } = payload;
         const sections = [];
         if (answer) sections.push(_renderAnswer(answer));
         if (products.length)  sections.push(_renderSection('Products', products));
@@ -7954,7 +8163,14 @@
         if (customers.length) sections.push(_renderSection('Customers', customers));
         if (campaigns.length) sections.push(_renderSection('Campaigns', campaigns));
         if (!sections.length) {
-            wrap.innerHTML = `<div class="search-empty-state"><div class="search-empty-state-icon">🔍</div>No matches across products, orders, customers or campaigns. Try a brand name, an order number, or a phrase like "top products" or "yesterday".</div>`;
+            // Acknowledge what we parsed so the user knows we tried — and suggest a refinement.
+            const parsedBits = [];
+            if (ctx?.brand)     parsedBits.push(`brand: <b>${ctx.brand}</b>`);
+            if (ctx?.metric)    parsedBits.push(`metric: <b>${ctx.metric}</b>`);
+            if (ctx?.timeRange) parsedBits.push(`window: <b>${ctx.timeRange.label}</b>`);
+            const parsedLine = parsedBits.length ? `<div style="margin-top:10px;font-size:11px;color:var(--text-sec);">Understood ${parsedBits.join(' · ')} but couldn't match an intent — try combining them, e.g. "Strapo revenue last week".</div>` : '';
+            const hint = ctx?.brand ? `<div style="margin-top:6px;font-size:11px;color:var(--text-sec);">Try: <b>${ctx.brand} revenue last week</b> · <b>${ctx.brand} profit this month</b> · <b>${ctx.brand} RTO rate</b></div>` : '';
+            wrap.innerHTML = `<div class="search-empty-state"><div class="search-empty-state-icon">🔍</div>No matches across products, orders, customers or campaigns.${parsedLine}${hint}</div>`;
             return;
         }
         wrap.innerHTML = sections.join('');
