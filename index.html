@@ -2709,10 +2709,16 @@
     // Pass 'delivered_at' for delivery KPIs, 'rto_initiated_at' for RTO KPIs, etc.
     function getFilteredShipments(dur, anchorCol = 'shipped_at') {
         const all = (DATA.shipments && DATA.shipments.raw) || [];
-        if (dur === 'all') return all;
+        // Apply product filter FIRST so the date filter then runs on the right subset.
+        // _orderIdsInFilter() is null on mode=all, a Set on mode=subset.
+        const orderIds = (typeof _orderIdsInFilter === 'function') ? _orderIdsInFilter() : null;
+        const productScoped = (orderIds)
+            ? all.filter(s => orderIds.has(Number(s.order_id)))
+            : all;
+        if (dur === 'all') return productScoped;
         const w = _dateWindow(dur);
-        if (!w) return all;
-        return all.filter(s => _inWindow(s[anchorCol], w));
+        if (!w) return productScoped;
+        return productScoped.filter(s => _inWindow(s[anchorCol], w));
     }
     // CASH universe: filter COD remittances / Razorpay settlements / payments by their settle date.
     function getFilteredCashEvents(dur) {
