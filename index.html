@@ -2081,6 +2081,36 @@
     };
     productFilter.hydrateFromStorage();
 
+    // Tokenise a product name into match-able aliases.
+    // Lowercase, strip ™ ® © glyphs, split on non-alphanumerics, keep tokens length >= 4.
+    function extractAliasTokens(name) {
+        if (!name) return [];
+        return name
+            .toLowerCase()
+            .replace(/[™®©]/g, '')
+            .split(/[^a-z0-9]+/)
+            .filter(w => w.length >= 4);
+    }
+
+    // Iterative Levenshtein (two-row optimisation). Tiny, fast enough for ~63 campaigns x ~186 products.
+    function levenshtein(a, b) {
+        if (a === b) return 0;
+        if (!a.length) return b.length;
+        if (!b.length) return a.length;
+        let prev = new Array(b.length + 1);
+        let curr = new Array(b.length + 1);
+        for (let j = 0; j <= b.length; j++) prev[j] = j;
+        for (let i = 1; i <= a.length; i++) {
+            curr[0] = i;
+            for (let j = 1; j <= b.length; j++) {
+                const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+                curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+            }
+            [prev, curr] = [curr, prev];
+        }
+        return prev[b.length];
+    }
+
     // ==================== API LAYER ====================
     // Paginated fetch — uses Range header to bypass Supabase server-side row cap (default 1000)
     async function sq(table, params = '') {
