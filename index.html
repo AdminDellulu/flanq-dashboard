@@ -3121,31 +3121,10 @@
         if (roas < 2 && totalAdSpend > 0) alerts += `<div class="alert-banner warning" style="display:flex;align-items:center;gap:10px;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>ROAS below 2x (${roas.toFixed(2)}x) — review underperforming campaigns</span></div>`;
         document.getElementById('overviewAlerts').innerHTML = alerts;
 
-        // Ad Efficiency Snapshot — honor the duration selector and exclude the Meta - Aggregate roll-up.
+        // Ad Efficiency Snapshot — honor the duration selector + product filter, exclude Meta - Aggregate roll-up.
         // Column is `purchase_value` (Meta-attributed revenue) — the previous read of `a.revenue` always
         // resolved to undefined, making every campaign's ROAS render as 0.0x.
-        const _adAll = DATA.adSpend || [];
-        const _adsLast = (DATA.dailyMetrics && DATA.dailyMetrics.length) ? DATA.dailyMetrics[DATA.dailyMetrics.length-1].d : null;
-        const adData = (() => {
-            if (dur === 'all' || !_adsLast) return _adAll.filter(a => a.campaign_name !== 'Meta - Aggregate');
-            if (dur === 'today') return _adAll.filter(a => a.date === _adsLast && a.campaign_name !== 'Meta - Aggregate');
-            if (dur === 'yesterday') {
-                const _y = DATA.dailyMetrics.length > 1 ? DATA.dailyMetrics[DATA.dailyMetrics.length-2].d : _adsLast;
-                return _adAll.filter(a => a.date === _y && a.campaign_name !== 'Meta - Aggregate');
-            }
-            if (dur === '7d' || dur === '30d') {
-                const _c = new Date(_adsLast); _c.setDate(_c.getDate() - (dur === '7d' ? 7 : 30));
-                const _cut = _c.toISOString().slice(0,10);
-                return _adAll.filter(a => a.date >= _cut && a.campaign_name !== 'Meta - Aggregate');
-            }
-            if (dur === 'custom') {
-                const _s = document.getElementById('customStart')?.value;
-                const _e = document.getElementById('customEnd')?.value;
-                if (_s && _e) return _adAll.filter(a => a.date >= _s && a.date <= _e && a.campaign_name !== 'Meta - Aggregate');
-                return [];
-            }
-            return _adAll.filter(a => a.campaign_name !== 'Meta - Aggregate');
-        })();
+        const adData = getFilteredAdSpend(dur).filter(a => a.campaign_name !== 'Meta - Aggregate');
         const totalAdSpendAll = adData.reduce((s,a) => s + (parseFloat(a.spend)||0), 0);
         const totalAdRev = adData.reduce((s,a) => s + (parseFloat(a.purchase_value)||0), 0);
         const blendedROAS = totalAdSpendAll > 0 ? totalAdRev / totalAdSpendAll : 0;
@@ -3917,34 +3896,10 @@
         if (_openPanel && _openPanel.classList.contains('open')) {
             try { closeDrawer(); } catch(e) {}
         }
-        // Filter ad_spend by selected duration
+        // Filter ad_spend by selected duration + product filter (getFilteredAdSpend handles both).
         const dur = document.getElementById('durationSelect').value;
         const allDM = DATA.dailyMetrics;
-        let filteredAds = [...(DATA.adSpend || [])];
-        if (dur !== 'all' && allDM.length) {
-            const last = allDM[allDM.length-1].d;
-            if (dur === 'today') {
-                filteredAds = filteredAds.filter(a => a.date === last);
-            } else if (dur === 'yesterday') {
-                const yday = allDM.length > 1 ? allDM[allDM.length-2].d : last;
-                filteredAds = filteredAds.filter(a => a.date === yday);
-            } else if (dur === '7d') {
-                const c = new Date(last); c.setDate(c.getDate()-7);
-                const cutoff = c.toISOString().slice(0,10);
-                filteredAds = filteredAds.filter(a => a.date >= cutoff);
-            } else if (dur === '30d') {
-                const c = new Date(last); c.setDate(c.getDate()-30);
-                const cutoff = c.toISOString().slice(0,10);
-                filteredAds = filteredAds.filter(a => a.date >= cutoff);
-            } else if (dur === 'custom') {
-                const sEl = document.getElementById('customStart');
-                const eEl = document.getElementById('customEnd');
-                const s = sEl && sEl.value ? sEl.value : null;
-                const e = eEl && eEl.value ? eEl.value : null;
-                if (s && e) filteredAds = filteredAds.filter(a => a.date >= s && a.date <= e);
-                else filteredAds = [];
-            }
-        }
+        let filteredAds = getFilteredAdSpend(dur);
 
         // KPI totals — all ad-level rows (only level stored since v6), excluding Meta - Aggregate.
         // Require campaign_id so totals match the sum of campaign cards (otherwise rows w/o campaign_id leak in).
@@ -4514,8 +4469,10 @@
             const daysWithSpend = dm.filter(d => d.adSpend > 0);
             const periodSpend = sum(dm, 'adSpend');
             const periodRev = sum(dm, 'rev');
+            // Hoist filtered ads once (respects product filter) so per-day click sums use the right slice.
+            const _attribAds = getFilteredAdSpend('all');
             const periodClicks = daysWithSpend.reduce((a,d) => {
-                const dayAds = DATA.adSpend.filter(ad => ad.date === d.d);
+                const dayAds = _attribAds.filter(ad => ad.date === d.d);
                 return a + dayAds.reduce((s,ad) => s + (ad.clicks||0), 0);
             }, 0);
             const periodROAS = periodSpend > 0 ? periodRev / periodSpend : 0;
