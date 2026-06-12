@@ -2611,7 +2611,13 @@
     function isHourlyMode(dur) { return dur === 'today' || dur === 'yesterday'; }
 
     function getFilteredData(dur) {
-        const dm = DATA.dailyMetrics; if (!dm.length) return [];
+        // Product-filter integration: when subset mode is active, swap the data source from cached
+        // daily_metrics to the re-derived series. The existing window/hourly/aggregation logic below
+        // then operates on the right universe. One swap, every consumer respects the filter.
+        const dm = (productFilter.mode === 'subset')
+            ? deriveDailyMetricsForFilter('all')
+            : DATA.dailyMetrics;
+        if (!dm.length) return [];
         const last = new Date(dm[dm.length-1].d);
 
         // For today/yesterday: return hourly data instead of a single daily row.
@@ -3054,7 +3060,7 @@
         // Weighted CAC = total spend / total orders (was unweighted day-mean of d.cac which over-weighted low-volume days).
         const avgCac = totalOrders > 0 ? totalAdSpend / totalOrders : 0;
 
-        const allData = DATA.dailyMetrics;
+        const allData = getFilteredDailyMetrics('all');  // respects product filter for prior-period comparison
         let prevRev = 0, prevProfit = 0, prevOrders = 0, prevAdSpend = 0, prevRoas = 0;
         if (isHourlyMode(dur)) {
             // For today: compare vs yesterday's daily_metrics row; for yesterday: compare vs day before
@@ -4779,7 +4785,7 @@
     function renderFinance() {
         const dur = document.getElementById('durationSelect').value;
         const data = getFilteredData(dur);
-        const allDM = DATA.dailyMetrics;
+        const allDM = getFilteredDailyMetrics('all');  // respects product filter for last7/prior7 windows
         const totalRev=sum(data,'rev'), totalProfit=sum(data,'profit'), totalCOGS=sum(data,'cogs');
         const totalGST=sum(data,'gst'), totalPkg=sum(data,'pkg'), totalShip=sum(data,'ship');
         const totalGW=sum(data,'gw'), totalAdSpend=sum(data,'adSpend'), totalOrders=sum(data,'orders');
@@ -5923,7 +5929,7 @@
         }
 
         // ====== SHIPPING COST FORECAST ======
-        const allDM = DATA.dailyMetrics;
+        const allDM = getFilteredDailyMetrics('all');  // respects product filter for 4-week ship cost forecast
         const last4w = [allDM.slice(-28, -21), allDM.slice(-21, -14), allDM.slice(-14, -7), allDM.slice(-7)];
         const weekCosts = last4w.map(w => sum(w, 'ship'));
         const weekOrders = last4w.map(w => sum(w, 'orders'));
@@ -6863,7 +6869,7 @@
 
     // ==================== RENDER: STRATEGY (Enhanced — Edits 5+6) ====================
     function renderStrategy() {
-        const dm = DATA.dailyMetrics;
+        const dm = getFilteredDailyMetrics('all');  // Strategy tab works on full history; respects product filter
         // Current calendar month in IST — was previously hardcoded to '2026-03', freezing the entire
         // Strategy tab to March data regardless of "today". Re-anchor on the current IST month.
         const _istToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()); // 'YYYY-MM-DD'
