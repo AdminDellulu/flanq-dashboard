@@ -2432,25 +2432,42 @@
     // Paginated fetch — uses Range header to bypass Supabase server-side row cap (default 1000)
     async function sq(table, params = '') {
         const PAGE = 1000;
-        let allRows = [];
-        let offset = 0;
-        // If caller already specified a limit, respect it (single fetch)
+        const CAP = 50000;   // safety: never fetch more than 50 pages
         const hasLimit = /limit=\d+/.test(params);
-        while (true) {
-            const rangeHeaders = { ...headers, 'Range': `${offset}-${offset + PAGE - 1}`, 'Prefer': 'count=exact' };
-            const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}${params}`, { headers: rangeHeaders });
+        const url = `${SUPABASE_URL}/rest/v1/${table}${params}`;
+        const fetchPage = async (offset, withCount) => {
+            const h = { ...headers, 'Range': `${offset}-${offset + PAGE - 1}` };
+            if (withCount) h['Prefer'] = 'count=exact';   // count ONLY on the first page
+            const res = await fetch(url, { headers: h });
             if (!res.ok && res.status !== 206) throw new Error(`API ${res.status}: ${table}`);
-            const data = await res.json();
-            allRows = allRows.concat(data);
-            // If caller set a limit OR we got fewer than a full page, we're done
-            if (hasLimit || data.length < PAGE) break;
-            offset += PAGE;
-            // Safety: cap at 50 pages (50,000 rows) to prevent runaway fetches.
-            // ad_spend is the heavy table (~4K rows now, growing). Bump if usage approaches the cap.
-            if (offset >= 50000) {
-                console.warn(`⚠️ ${table}: hit 50K row safety cap. Data may be incomplete.`);
-                break;
+            const cr = res.headers.get('content-range') || '';
+            return { rows: await res.json(), total: parseInt(cr.split('/')[1], 10) };
+        };
+        // First page carries an exact count so we can fan the rest out in parallel.
+        const first = await fetchPage(0, true);
+        // Caller-imposed limit, or everything fit in one page → done.
+        if (hasLimit || first.rows.length < PAGE) return first.rows;
+
+        let allRows = first.rows;
+        if (Number.isFinite(first.total) && first.total > PAGE) {
+            // Known total: request every remaining page concurrently (no per-page count).
+            const reqs = [];
+            for (let offset = PAGE; offset < first.total && offset < CAP; offset += PAGE) {
+                reqs.push(fetchPage(offset, false));
             }
+            const pages = await Promise.all(reqs);
+            for (const p of pages) allRows = allRows.concat(p.rows);
+            if (first.total > CAP) console.warn(`⚠️ ${table}: ${first.total} rows exceeds 50K safety cap. Data truncated.`);
+        } else {
+            // No count header — fall back to sequential paging.
+            let offset = PAGE;
+            while (offset < CAP) {
+                const p = await fetchPage(offset, false);
+                allRows = allRows.concat(p.rows);
+                if (p.rows.length < PAGE) break;
+                offset += PAGE;
+            }
+            if (offset >= CAP) console.warn(`⚠️ ${table}: hit 50K row safety cap. Data may be incomplete.`);
         }
         return allRows;
     }
